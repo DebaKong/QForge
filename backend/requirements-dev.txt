@@ -1,0 +1,5 @@
+# QForge 开发/测试依赖 — 版本已锁定
+# 安装：pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+pytest==9.1.1
+httpx==0.28.1

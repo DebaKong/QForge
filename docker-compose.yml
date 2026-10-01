@@ -1,0 +1,57 @@
+# QForge 阶段 0 基础设施编排：Redis + PostgreSQL
+#
+# 状态说明（诚实标注）：
+#   - 本文件已编写，但【未经运行验证】。本机 Docker daemon 未运行，且
+#     registry-1.docker.io:443 不可达，无法拉取镜像。
+#   - 阶段 0 的运行期验证使用 SQLite + Celery eager（见 docs/phase-0.md）；
+#     Redis 与 PostgreSQL 的真实链路在环境就绪后接入并验证。
+#
+# 启动前提（需人工确认）：
+#   1. 启动 Docker Desktop；
+#   2. 确认镜像仓库可达（必要时配置镜像加速）；
+#   3. 确认下列镜像 tag 后再首次运行（SPEC 4.1：版本必须明确，不得含糊）：
+#        redis:7.4-alpine / postgres:16-alpine
+#
+# 启动后切换后端配置：
+#   QFORGE_DATABASE_URL=postgresql+psycopg://qforge:qforge@127.0.0.1:5432/qforge
+#   QFORGE_CELERY_TASK_ALWAYS_EAGER=false
+#   QFORGE_CELERY_BROKER_URL=redis://127.0.0.1:6379/0
+#   QFORGE_CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/1
+
+name: qforge
+
+services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: qforge
+      POSTGRES_PASSWORD: qforge
+      POSTGRES_DB: qforge
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qforge -d qforge"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  postgres-data:

@@ -1,0 +1,26 @@
+[project]
+name = "qforge"
+version = "0.1.0"
+description = "QForge — ONNX 自动化量化部署平台（SPEC.md V1.0）"
+# SPEC 4.1：版本矩阵必须固定。阶段 0 统一使用 Python 3.10（conda env: qforge）。
+requires-python = ">=3.10,<3.11"
+
+# 说明：本仓库阶段 0 不做打包分发，仅使用该文件承载工具配置与版本约束。
+
+[tool.pytest.ini_options]
+# backend/ 提供 `app` 包，仓库根提供 `workers` 包（SPEC 附录 A 目录结构）
+pythonpath = ["backend", "."]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error::DeprecationWarning:app.*"]
+markers = [
+    "slow: 需要外部服务或耗时较长的用例（阶段 0 无此依赖，保留以便阶段 1 使用）",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["backend", "workers", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

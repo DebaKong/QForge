@@ -1,0 +1,4 @@
+QForge 任务存储根目录（SPEC 14.2）。
+
+运行时目录：storage/<task_id>/{input,calibration,intermediate,engine,source,docker,logs,report}
+本文件仅用于保留目录结构，目录内容不入库（见 .gitignore）。
