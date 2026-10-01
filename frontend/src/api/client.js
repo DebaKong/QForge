@@ -24,6 +24,24 @@ export const api = {
     client.get('/models', { params: { project_id: projectId } }).then((r) => r.data),
   getModel: (id) => client.get(`/models/${id}`).then((r) => r.data),
 
+  // 上传走 multipart：ONNX 模型与校准集 ZIP（服务端做大小/扩展名/ZIP 炸弹/路径穿越校验）
+  uploadModel: (projectId, { name, architecture, file }) => {
+    const form = new FormData()
+    form.append('project_id', projectId)
+    form.append('name', name)
+    form.append('architecture', architecture || 'yolov8')
+    form.append('file', file, file.name)
+    return client.post('/models/upload', form).then((r) => r.data)
+  },
+  uploadDataset: (projectId, { name, kind, file }) => {
+    const form = new FormData()
+    form.append('project_id', projectId)
+    form.append('name', name)
+    form.append('kind', kind || 'calibration')
+    form.append('file', file, file.name)
+    return client.post('/datasets/upload', form).then((r) => r.data)
+  },
+
   listDatasets: (projectId) =>
     client.get('/datasets', { params: { project_id: projectId } }).then((r) => r.data),
 
@@ -34,6 +52,9 @@ export const api = {
   getTaskTransitions: (id) => client.get(`/tasks/${id}/transitions`).then((r) => r.data),
   getTaskLogs: (id) => client.get(`/tasks/${id}/logs`).then((r) => r.data),
   getTaskArtifacts: (id) => client.get(`/tasks/${id}/artifacts`).then((r) => r.data),
+  getTaskReport: (id) => client.get(`/tasks/${id}/report`).then((r) => r.data),
+  artifactDownloadUrl: (taskId, artifactId) =>
+    `/api/tasks/${taskId}/artifacts/${artifactId}/download`,
   enqueueTask: (id) => client.post(`/tasks/${id}/enqueue`).then((r) => r.data),
   cancelTask: (id) => client.post(`/tasks/${id}/cancel`).then((r) => r.data),
 }

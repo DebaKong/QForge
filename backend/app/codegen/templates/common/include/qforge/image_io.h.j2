@@ -1,0 +1,28 @@
+// 生成文件：图像与张量文件读写（公共推理底座）
+// 为让生成工程不依赖 OpenCV，这里只支持 PPM(P6) 图像与裸 float32 张量文件。
+// 平台在运行验证阶段会把测试图像转换为 PPM，或直接提供预处理后的张量。
+#pragma once
+
+#include <cstddef>
+#include <string>
+#include <vector>
+
+namespace qforge {
+
+struct Image {
+  int width = 0;
+  int height = 0;
+  int channels = 3;
+  std::vector<unsigned char> pixels;  // RGB 交错
+};
+
+/// 读取二进制 PPM（P6）图像
+Image load_ppm(const std::string& path);
+
+/// 读取裸 float32 张量（按行优先、与模型输入 shape 一致）
+std::vector<float> load_raw_tensor(const std::string& path, std::size_t expected_count);
+
+/// 写出裸 float32 张量（用于与平台侧精度对比）
+void save_raw_tensor(const std::string& path, const std::vector<float>& data);
+
+}  // namespace qforge

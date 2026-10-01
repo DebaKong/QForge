@@ -47,15 +47,24 @@ onMounted(load)
     <el-alert
       type="info"
       :closable="false"
-      title="Engine、C++ 工程、Dockerfile 与报告属阶段 1 交付；当前阶段产物表为空是预期结果。"
+      title="阶段 1：Engine、C++ 工程、Dockerfile、报告与 artifact.zip 均在此列出，可直接下载。"
       style="margin-bottom: 12px"
     />
 
-    <el-table v-if="loaded" :data="artifacts" empty-text="暂无产物">
-      <el-table-column prop="kind" label="类型" min-width="120" />
+    <el-table v-if="loaded" :data="artifacts" empty-text="暂无产物（任务需跑到 PACKAGING 阶段）">
+      <el-table-column prop="kind" label="类型" min-width="110" />
       <el-table-column prop="relative_path" label="相对路径" min-width="260" />
-      <el-table-column prop="size_bytes" label="大小(字节)" min-width="120" />
+      <el-table-column label="大小" min-width="110">
+        <template #default="{ row }">
+          {{ row.size_bytes ? (row.size_bytes / 1024).toFixed(1) + ' KB' : '—' }}
+        </template>
+      </el-table-column>
       <el-table-column prop="created_at" label="生成时间" min-width="200" />
+      <el-table-column label="下载" width="100">
+        <template #default="{ row }">
+          <a :href="api.artifactDownloadUrl(taskId, row.id)" target="_blank">下载</a>
+        </template>
+      </el-table-column>
     </el-table>
   </el-card>
 </template>

@@ -29,14 +29,22 @@ _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
 
 
-def _enable_sqlite_foreign_keys(engine: Engine) -> None:
-    """SQLite 默认不启用外键约束，显式打开以保证测试能发现引用错误。"""
+def _enable_sqlite_pragmas(engine: Engine) -> None:
+    """SQLite 连接级设置。
+
+    - foreign_keys=ON：SQLite 默认不启用外键约束，显式打开以保证测试能发现引用错误；
+    - journal_mode=WAL：阶段 1 起任务在后台线程中执行，WAL 允许「一写多读」并发，
+      否则后台写库会与 API 请求互相阻塞；
+    - busy_timeout：暂时拿不到写锁时等待，而不是立刻抛 "database is locked"。
+    """
 
     @event.listens_for(engine, "connect")
-    def _set_pragma(dbapi_connection: object, _record: object) -> None:  # pragma: no cover
+    def _set_pragmas(dbapi_connection: object, _record: object) -> None:  # pragma: no cover
         if isinstance(dbapi_connection, sqlite3.Connection):
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=15000")
             cursor.close()
 
 
@@ -58,7 +66,7 @@ def configure_engine(url: str | None = None, *, echo: bool | None = None) -> Eng
 
     _engine = create_engine(target_url, echo=target_echo, future=True, connect_args=connect_args)
     if target_url.startswith("sqlite"):
-        _enable_sqlite_foreign_keys(_engine)
+        _enable_sqlite_pragmas(_engine)
 
     _session_factory = sessionmaker(
         bind=_engine, autoflush=False, expire_on_commit=False, class_=Session

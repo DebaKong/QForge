@@ -1,0 +1,103 @@
+// 生成文件：检测后处理（任务模板：解码结果 → 过滤 → NMS）
+#include "qforge/detector.h"
+
+#include <algorithm>
+#include <cmath>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "qforge/generated_config.h"
+#include "qforge/yolov8_decoder.h"
+
+namespace qforge {
+namespace {
+
+float intersection_over_union(const Detection& a, const Detection& b) {
+  const float inter_x1 = std::max(a.x1, b.x1);
+  const float inter_y1 = std::max(a.y1, b.y1);
+  const float inter_x2 = std::min(a.x2, b.x2);
+  const float inter_y2 = std::min(a.y2, b.y2);
+  const float inter_w = std::max(0.0f, inter_x2 - inter_x1);
+  const float inter_h = std::max(0.0f, inter_y2 - inter_y1);
+  const float inter = inter_w * inter_h;
+
+  const float area_a = std::max(0.0f, a.x2 - a.x1) * std::max(0.0f, a.y2 - a.y1);
+  const float area_b = std::max(0.0f, b.x2 - b.x1) * std::max(0.0f, b.y2 - b.y1);
+  const float union_area = area_a + area_b - inter;
+  if (union_area <= 0.0f) {
+    return 0.0f;
+  }
+  return inter / union_area;
+}
+
+/// 贪心 NMS（classwise 时按类别分别抑制，与平台 Python 侧实现一致）
+std::vector<Detection> apply_nms(std::vector<Detection> input, bool classwise,
+                                 float iou_threshold) {
+  std::sort(input.begin(), input.end(),
+            [](const Detection& a, const Detection& b) { return a.score > b.score; });
+
+  std::vector<Detection> kept;
+  std::vector<bool> suppressed(input.size(), false);
+
+  for (std::size_t i = 0; i < input.size(); ++i) {
+    if (suppressed[i]) {
+      continue;
+    }
+    kept.push_back(input[i]);
+    for (std::size_t j = i + 1; j < input.size(); ++j) {
+      if (suppressed[j]) {
+        continue;
+      }
+      if (classwise && input[j].class_id != input[i].class_id) {
+        continue;
+      }
+      if (intersection_over_union(input[i], input[j]) > iou_threshold) {
+        suppressed[j] = true;
+      }
+    }
+  }
+  return kept;
+}
+
+}  // namespace
+
+DetectionResult run_detection(const std::vector<float>& raw_output) {
+  using namespace qforge::config;
+
+  DetectionResult result;
+  if (raw_output.empty()) {
+    throw std::runtime_error("推理输出为空");
+  }
+
+  const int attributes = 4 + kClassCount + (kHasObjectness ? 1 : 0);
+  if (raw_output.size() % static_cast<std::size_t>(attributes) != 0) {
+    throw std::runtime_error("输出张量元素数量与 class_count 不匹配");
+  }
+
+  const int anchors = static_cast<int>(raw_output.size() / attributes);
+  // YOLOv8 导出为 [1, channels, anchors]，这里是去掉 batch 后按 (channels, anchors) 连续存放
+  const int channels = attributes;
+  result.channels = channels;
+  result.anchors = anchors;
+
+  const std::string decoder(kDecoder);
+  if (decoder != "yolov8") {
+    throw std::runtime_error("当前生成的工程只实现了 yolov8 解码器：" + decoder);
+  }
+
+  std::vector<Detection> candidates;
+  decode_yolov8(raw_output.data(), channels, anchors, candidates);
+  result.candidates = static_cast<int>(candidates.size());
+
+  const bool classwise = std::string(kNmsType) == "classwise";
+  if (std::string(kNmsType) == "none") {
+    result.detections = candidates;
+  } else {
+    result.detections = apply_nms(std::move(candidates), classwise, kIouThreshold);
+  }
+  return result;
+}
+
+}  // namespace qforge

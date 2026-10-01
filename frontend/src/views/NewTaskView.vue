@@ -9,6 +9,7 @@ const projects = ref([])
 const models = ref([])
 const datasets = ref([])
 const submitting = ref(false)
+const enqueueNow = ref(true)
 
 const form = ref({
   project_id: '',
@@ -51,8 +52,13 @@ async function submit() {
       ...form.value,
       model_id: form.value.model_id || null,
       dataset_id: form.value.dataset_id || null,
+      build: { cpp_build: 'auto' },
     })
     ElMessage.success(`任务已创建：${task.id}`)
+    if (enqueueNow.value) {
+      await api.enqueueTask(task.id)
+      ElMessage.info('已入队，任务正在后台执行（可看实时日志）')
+    }
     router.push(`/tasks/${task.id}`)
   } catch (error) {
     ElMessage.error(error.message)
@@ -69,7 +75,7 @@ async function submit() {
     <el-alert
       type="info"
       :closable="false"
-      title="阶段 0 只登记任务与配置快照；文件上传、模型校验与量化流水线在阶段 1 落地。"
+      title="阶段 1：创建任务后会自动跑完整流水线（校验 → 量化 → Engine → 生成 C++ 工程 → 编译 → 真实推理 → 打包）。"
       style="margin-bottom: 16px"
     />
 
@@ -106,6 +112,10 @@ async function submit() {
 
       <el-form-item label="推理后端">
         <el-input v-model="form.backend_name" disabled />
+      </el-form-item>
+
+      <el-form-item>
+        <el-checkbox v-model="enqueueNow">创建后立即入队执行</el-checkbox>
       </el-form-item>
 
       <el-form-item>

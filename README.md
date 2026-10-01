@@ -5,7 +5,8 @@ C++ 推理工程生成、自动编译与运行验证。
 
 - 需求与技术设计规格：[SPEC.md](SPEC.md)
 - 协作方式与阶段纪律：[AGENTS.md](AGENTS.md)
-- **当前实现阶段：阶段 0（脚手架与基础架构）** —— 交付与验证证据见 [docs/phase-0.md](docs/phase-0.md)
+- **当前实现阶段：阶段 1（MVP：2D 检测 + TensorRT）** —— 交付与验证证据见 [docs/phase-1.md](docs/phase-1.md)
+- 阶段 0 记录：[docs/phase-0.md](docs/phase-0.md)
 - 版本矩阵（已锁定 / 待确认）：[docs/versions.md](docs/versions.md)
 
 ## 阶段状态
@@ -13,10 +14,21 @@ C++ 推理工程生成、自动编译与运行验证。
 | 阶段 | 目标 | 状态 |
 | --- | --- | --- |
 | 阶段 0 | 脚手架与基础架构（Vue / FastAPI / Redis / Celery / 存储 / 数据库 / 任务状态机） | 已完成（Redis 与 PostgreSQL 真实链路待环境就绪） |
-| 阶段 1 | MVP：2D 检测 + TensorRT（上传→校验→FP16/INT8→Engine→C++→编译→测试→Docker） | 未开始 |
+| 阶段 1 | MVP：2D 检测 + TensorRT（上传→校验→FP16/INT8→Engine→C++→编译→测试→Docker） | **已完成并实测通过**（FP16/INT8 全链路；Docker 镜像构建因 daemon 未运行未验证） |
 | 阶段 2 | V1.0：稳定性与质量（分割、误差分析、算子检测、数据集管理） | 未开始 |
 | 阶段 3 | V1.5：3D PoC | 未开始 |
 | 阶段 4 | V2.0：多后端（Backend Adapter + OpenVINO） | 未开始 |
+
+### 阶段 1 实测结果（真实 GPU）
+
+以结构等价的合成 YOLOv8 形状模型（输入 64×64）跑完整流水线：
+
+| 精度 | Engine | MAE（对照 FP32 基准） | 余弦相似度 | 生成的 C++ 程序 |
+| --- | --- | --- | --- | --- |
+| FP16 | 52.1 KB | 1.8e-5 | 1.000000 | 编译成功并真实推理 |
+| INT8（熵校准，4 张校准图） | 117.0 KB | 3.18e-4 | 0.999991 | 编译成功并真实推理 |
+
+FP32 基准 = onnxruntime CPU 推理；三种精度不混称（SPEC 9）。
 
 ## 目录结构
 
@@ -104,7 +116,8 @@ npm run dev      # http://127.0.0.1:5173，/api 自动代理到 127.0.0.1:8000
 
 ```powershell
 # 必须在仓库根执行（pytest 的 pythonpath 由 pyproject.toml 提供）
-python -m pytest -q
+python -m pytest -q                 # 默认套件：143 项，纯 CPU，不需要 GPU
+python -m pytest -m gpu -q -s       # 端到端：真实构建 Engine、编译 C++ 并推理（需要上面的工具链）
 ```
 
 ## 配置
@@ -126,20 +139,23 @@ python -m pytest -q
 
 ## API
 
-| 方法 | 路径 | 阶段 0 行为 |
+| 方法 | 路径 | 行为 |
 | --- | --- | --- |
-| GET | `/api/health` | 返回应用、Python、数据库方言、存储根、阶段标记 |
+| GET | `/api/health` | 应用、Python、数据库方言、存储根、阶段标记 |
 | POST / GET | `/api/projects`、`/api/projects/{id}` | 项目登记与查询 |
-| POST / GET | `/api/models`、`/api/models/{id}` | 模型元数据与 Model Definition 登记（**不含文件上传**） |
-| POST / GET | `/api/datasets`、`/api/datasets/{id}` | 数据集元数据登记（**不含 ZIP 上传与解压**） |
-| POST / GET | `/api/tasks`、`/api/tasks/{id}` | 创建任务（落状态 + TaskConfig 快照 + 存储目录）与查询 |
+| **POST** | **`/api/models/upload`** | **上传 ONNX（multipart）→ 大小/扩展名校验 → ONNX 校验链 → 落 Model Definition** |
+| POST / GET | `/api/models`、`/api/models/{id}` | 模型元数据登记与查询（元数据方式，不含文件） |
+| **POST** | **`/api/datasets/upload`** | **上传 calibration.zip → 逐条安全解压（防路径穿越 / ZIP 炸弹 / 符号链接）→ 统计图像** |
+| POST / GET | `/api/datasets`、`/api/datasets/{id}` | 数据集元数据登记与查询 |
+| POST / GET | `/api/tasks`、`/api/tasks/{id}` | 创建任务（状态 + TaskConfig 快照 + 存储目录）与查询 |
 | GET | `/api/tasks/{id}/config` | 任务配置快照 |
 | GET | `/api/tasks/{id}/transitions` | 当前状态与允许的下一步（前端不复制状态机） |
-| POST | `/api/tasks/{id}/enqueue` | `CREATED -> QUEUED` 并投递 Celery |
+| POST | `/api/tasks/{id}/enqueue` | `CREATED -> QUEUED` 并投递执行（进程内执行器或 Celery） |
 | POST | `/api/tasks/{id}/cancel` | 非终态 → `CANCELLED` |
-| GET | `/api/tasks/{id}/logs` | 阶段日志 |
-| GET | `/api/tasks/{id}/artifacts` | 产物列表（阶段 0 为空） |
-| GET | `/api/tasks/{id}/report` | **501 NOT_IMPLEMENTED**（精度报告属阶段 2） |
+| GET | `/api/tasks/{id}/logs` | 阶段日志（前端轮询展示） |
+| GET | `/api/tasks/{id}/artifacts` | 产物列表（Engine / 源码 / 报告 / artifact.zip） |
+| GET | `/api/tasks/{id}/artifacts/{artifact_id}/download` | 下载单个产物（路径受限在存储根内） |
+| GET | `/api/tasks/{id}/report` | 精度验证指标（ENGINE 与 FP32 基准的 MAE/RMSE/余弦）；无结果时 501 |
 
 错误响应统一为 `{"error_code", "message", "detail"}`，错误码见 SPEC 15.1 与 `backend/app/errors.py`。
 
@@ -152,9 +168,29 @@ python -m pytest -q
 阶段 0 的 Worker 为**占位实现**：它登记领取记录并写日志，但**不推进阶段、不伪造 SUCCESS**，
 因此入队后任务停留在 `QUEUED`，等待阶段 1 接续。
 
-## 已知环境缺口（阶段 0）
+## 已知环境缺口
 
-- 本机无 Redis 服务、无 PostgreSQL：真实 broker 与 PostgreSQL 链路未验证（SQLite + eager 已验证）
-- Docker daemon 未运行且 Docker Hub 不可达：`docker-compose.yml` 未经运行验证
-- CMake / make / nvcc 缺失：阶段 1 生成并编译 C++ 工程前必须补齐
+- **Docker 镜像构建未验证**：daemon 未运行，且 Dockerfile 的基础镜像 tag 必须与 TensorRT/CUDA 匹配（模板中为 `REPLACE_WITH_CONFIRMED_TAG` 占位），需人工确认后实测
+- **Redis / PostgreSQL 未接入**（按要求暂缓）：当前用进程内后台执行器 + SQLite（已开 WAL）
+- **真实 YOLOv8 权重模型未纳入回归**：阶段 1 用结构等价的合成模型验证全链路
+- **INT8 使用的是已被 TensorRT 标记为 deprecated 的 `IInt8Calibrator`**：可用但官方推荐「显式量化（Q/DQ）」，已记录待阶段 2 评估
 - 前端仅验证了生产构建、dev server 与 `/api` 代理，**未做浏览器交互验证**
+
+## 阶段 1 补充环境准备（GPU 工具链）
+
+阶段 1 的 Engine 构建 / C++ 编译 / 真实推理需要额外工具链，详见 [docs/phase-1.md](docs/phase-1.md) 第 5 节：
+
+```powershell
+pip install cmake ninja cuda-python==13.4.1        # CMake/Ninja/显存绑定（无需管理员）
+# CUDA 运行时开发文件：NVIDIA 公共分发站（无需登录）
+#   https://developer.download.nvidia.com/compute/cuda/redist/redistrib_13.0.0.json
+#   取 cuda_cudart / cuda_crt / cuda_cccl 三个 windows-x86_64 包，解压到 D:\qforge-toolchain\cuda\
+# TensorRT 开发包（需 NVIDIA 开发者账号）：https://developer.nvidia.com/tensorrt/download
+#   TensorRT 10.16.x / Windows / CUDA 13.0 / ZIP → 解压到 D:\qforge-toolchain\tensorrt\
+```
+
+编译还需要 Visual Studio 的 C++ 工具集（本机为 VS Professional 2019，`D:\vs2019`），
+平台会自动通过 vswhere 或常见路径找到 `vcvars64.bat`；也可用 `QFORGE_VCVARS_PATH` 显式指定。
+
+工具链缺失时任务不会伪成功：`build.cpp_build=auto`（默认）会把
+`cpp_verification` 标记为 **BLOCKED** 并写入缺少什么；设为 `required` 则直接 FAILED。

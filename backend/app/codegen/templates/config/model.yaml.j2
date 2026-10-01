@@ -1,0 +1,43 @@
+# 生成文件：模型与预处理/后处理配置（SPEC 11.2 config/model.yaml）
+# 与生成代码中的 include/qforge/generated_config.h 来自同一份 TaskConfig / Model Definition
+# 快照，二者语义一致；C++ 侧采用编译期常量以避免引入 YAML 解析依赖。
+task:
+  task_id: {{ task_id }}
+  task_type: {{ model.task }}
+  precision: {{ precision }}
+  generated_at: {{ generated_at }}
+
+model:
+  architecture: {{ model.architecture }}
+  input:
+    name: {{ model.input_name }}
+    shape: [{{ input_shape|join(', ') }}]
+    layout: {{ model.input_layout }}
+  output:
+    name: {{ model.output_name }}
+    format: "[{{ output_shape|join(',') }}]"
+    box_format: {{ model.box_format }}
+    has_objectness: {{ model.has_objectness|cpp }}
+    class_count: {{ model.class_count }}
+
+preprocessing:
+  resize: {{ model.resize }}
+  color: {{ model.color }}
+  scale: {{ model.scale }}
+  mean: [{{ model.mean|join(', ') }}]
+  std: [{{ model.std|join(', ') }}]
+  pad_value: {{ model.pad_value }}
+
+postprocessing:
+  decoder: {{ model.decoder }}
+  nms:
+    type: {{ model.nms_type }}
+    confidence_threshold: {{ model.confidence_threshold }}
+    iou_threshold: {{ model.iou_threshold }}
+
+engine:
+  file: {{ engine_filename }}
+  backend: {{ backend.name }}
+  backend_version: {{ backend.version }}
+  gpu_arch: {{ backend.gpu_arch }}
+  cuda_version: {{ backend.cuda_version }}

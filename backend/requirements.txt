@@ -2,6 +2,7 @@
 # 解释器：Python 3.10.21（conda env: qforge）
 # 完整环境快照见 docs/versions.md；更新依赖必须先确认版本影响再改本文件。
 
+# ---- Web / 数据库 / 队列 ----
 fastapi==0.142.2
 uvicorn[standard]==0.54.0
 SQLAlchemy==2.0.54
@@ -11,5 +12,27 @@ pydantic-settings==2.15.0
 celery==5.6.3
 redis==8.1.0
 
-# 阶段 1 接入 PostgreSQL 时追加（届时需先确认版本，不在阶段 0 引入）：
+# ---- 阶段 1：模型校验 / 数据校验 / 预处理 / 代码生成 / 上传 ----
+onnx==1.23.1                 # ONNX 解析与 Checker（SPEC 7.1 步骤 2）
+onnxruntime==1.23.2          # Runtime Load Test（步骤 3）与 FP32 精度基准（SPEC 9）
+numpy==2.2.6                 # 张量与精度指标
+opencv-python-headless==5.0.0.93  # resize / letterbox（无 GUI，服务器友好）
+pillow==12.3.0               # 图像读取（含 EXIF 方向）与 PPM 输出
+Jinja2==3.1.6                # 代码生成模板（SPEC 11.1；AGENTS.md 要求用 Jinja2）
+PyYAML==6.0.3                # 配置读写
+python-multipart==0.0.32     # 文件上传（multipart/form-data）
+psutil==7.2.2                # 资源信息（SPEC 15）
+
+# ---- 阶段 1：本地构建链与 GPU 显存绑定 ----
+# cmake / ninja 由 pip 安装，不需要系统管理员权限（SPEC 11.3 步骤 2~3）
+cmake==4.4.3
+ninja==1.13.2
+# TensorRT 的 INT8 校准与推理需要设备指针；cuda-python 是 NVIDIA 官方 Python 绑定，
+# 避免引入需要本地编译的 pycuda
+cuda-python==13.4.1
+
+# ---- GPU 后端（不通过 pip 提供开发文件，见 docs/phase-1.md 第 5 节）----
+# tensorrt==10.16.1.11  # 由 pip 提供运行库；C++ 编译另需官方 Windows 开发包（含头文件与导入库）
+
+# 阶段 2 接入 PostgreSQL 时追加（届时需先确认版本）：
 # psycopg[binary]==<具体版本>

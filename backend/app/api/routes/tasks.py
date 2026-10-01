@@ -10,9 +10,12 @@
 
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, Query, status
 
 from app.api.deps import SessionDep
+from app.config.settings import get_settings
 from app.errors import NotImplementedInPhaseError
 from app.schemas.task import (
     ArtifactRead,
@@ -23,6 +26,7 @@ from app.schemas.task import (
     TaskTransitionInfo,
 )
 from app.services import task_service
+from app.services.storage import safe_join
 from app.services.task_state import TaskStatus
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -90,10 +94,30 @@ def get_task_artifacts(task_id: str, session: SessionDep) -> list[ArtifactRead]:
     ]
 
 
-@router.get("/{task_id}/report", summary="精度报告（阶段 2 交付）")
-def get_task_report(task_id: str, session: SessionDep) -> None:
+@router.get(
+    "/{task_id}/report",
+    summary="精度验证报告（阶段 1 提供 Engine 与 FP32 基准的误差指标；完整对比报告属阶段 2）",
+)
+def get_task_report(task_id: str, session: SessionDep) -> dict:
+    """返回任务已产出的精度验证结果。
+
+    阶段 1 已按 SPEC 9.2 计算 MAE / MSE / RMSE / 最大绝对误差 / 余弦相似度
+    （FP32 基准 = onnxruntime CPU 推理）。任务尚未跑到 TESTING 阶段时，
+    明确返回 501，而不是返回空报告。
+    """
     task_service.get_task(session, task_id)  # 先确认任务存在，避免 404 被 501 掩盖
+
+    settings = get_settings()
+    storage_root = settings.resolved_storage_root
+    for artifact in task_service.list_artifacts(session, task_id):
+        if not artifact.relative_path.endswith("report/accuracy.json"):
+            continue
+        segments = [segment for segment in artifact.relative_path.split("/") if segment]
+        path = safe_join(storage_root, *segments)
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+
     raise NotImplementedInPhaseError(
-        "精度报告属阶段 2（SPEC 17：稳定性和质量），阶段 0 不提供",
+        "该任务尚无精度验证结果（需先完成到 TESTING 阶段）；FP32/FP16/INT8 三方对比报告属阶段 2",
         detail={"task_id": task_id, "planned_phase": "phase-2"},
     )

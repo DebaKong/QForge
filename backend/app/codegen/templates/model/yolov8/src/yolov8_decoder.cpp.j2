@@ -1,0 +1,88 @@
+// 生成文件：{{ model.architecture }} 解码实现
+#include "qforge/yolov8_decoder.h"
+
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "qforge/generated_config.h"
+
+namespace qforge {
+
+void decode_yolov8(const float* data, int channels, int anchors,
+                   std::vector<Detection>& out) {
+  using namespace qforge::config;
+
+  const int expected_channels = 4 + kClassCount + (kHasObjectness ? 1 : 0);
+  if (channels != expected_channels) {
+    throw std::runtime_error("输出通道数与 class_count / has_objectness 不一致");
+  }
+
+  out.clear();
+  out.reserve(static_cast<std::size_t>(anchors));
+
+  for (int anchor = 0; anchor < anchors; ++anchor) {
+    // 数据布局为 (channels, anchors)：第 c 行第 anchor 列
+    const auto at = [&](int channel) {
+      return data[static_cast<std::size_t>(channel) * anchors + anchor];
+    };
+
+    const float a0 = at(0);
+    const float a1 = at(1);
+    const float a2 = at(2);
+    const float a3 = at(3);
+
+    float best_score = 0.0f;
+    int best_class = 0;
+    if (kHasObjectness) {
+      const float objectness = at(4);
+      for (int cls = 0; cls < kClassCount; ++cls) {
+        const float score = objectness * at(5 + cls);
+        if (score > best_score) {
+          best_score = score;
+          best_class = cls;
+        }
+      }
+    } else {
+      for (int cls = 0; cls < kClassCount; ++cls) {
+        const float score = at(4 + cls);
+        if (score > best_score) {
+          best_score = score;
+          best_class = cls;
+        }
+      }
+    }
+
+    if (best_score < kConfidenceThreshold) {
+      continue;
+    }
+
+    Detection detection;
+    const std::string box_format(kBoxFormat);
+    if (box_format == "xywh" || box_format == "cxcywh") {
+      const float cx = a0;
+      const float cy = a1;
+      const float width = a2;
+      const float height = a3;
+      detection.x1 = cx - width * 0.5f;
+      detection.y1 = cy - height * 0.5f;
+      detection.x2 = cx + width * 0.5f;
+      detection.y2 = cy + height * 0.5f;
+    } else if (box_format == "xyxy") {
+      detection.x1 = a0;
+      detection.y1 = a1;
+      detection.x2 = a2;
+      detection.y2 = a3;
+    } else {
+      throw std::runtime_error("不支持的 box_format：" + box_format);
+    }
+
+    detection.score = best_score;
+    detection.class_id = best_class;
+    out.push_back(detection);
+  }
+}
+
+}  // namespace qforge

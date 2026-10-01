@@ -1,0 +1,64 @@
+# 生成文件：C++ 推理工程构建脚本（SPEC 11.2 生成物）
+# 依赖路径由 QForge 平台在生成时注入（来自实际安装的 TensorRT / CUDA 运行时），
+# 因此这里的路径就是「Engine 构建环境」的一部分，与 engine_metadata.json 相互印证。
+cmake_minimum_required(VERSION 3.20)
+project(qforge_detector LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# ---- 由平台注入的依赖路径（可用 -D 覆盖）----
+set(QFORGE_TRT_INCLUDE_DIRS "{{ backend.tensorrt_include_dirs|join(';') }}" CACHE STRING "TensorRT include dirs")
+set(QFORGE_TRT_LIB_DIRS "{{ backend.tensorrt_lib_dirs|join(';') }}" CACHE STRING "TensorRT lib dirs")
+set(QFORGE_TRT_LIBS "{{ backend.tensorrt_libs|join(';') }}" CACHE STRING "TensorRT libs")
+set(QFORGE_CUDA_INCLUDE_DIRS "{{ backend.cuda_include_dirs|join(';') }}" CACHE STRING "CUDA include dirs")
+set(QFORGE_CUDA_LIB_DIRS "{{ backend.cuda_lib_dirs|join(';') }}" CACHE STRING "CUDA lib dirs")
+set(QFORGE_CUDA_LIBS "{{ backend.cuda_libs|join(';') }}" CACHE STRING "CUDA libs")
+set(QFORGE_RUNTIME_DLL_DIRS "{{ backend.runtime_dll_dirs|join(';') }}" CACHE STRING "运行期 DLL 目录")
+
+add_executable(qforge_detector
+  src/main.cpp
+  src/engine.cpp
+  src/image_io.cpp
+  src/preprocess.cpp
+  src/detector.cpp
+  src/yolov8_decoder.cpp
+)
+
+target_include_directories(qforge_detector PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${QFORGE_TRT_INCLUDE_DIRS}
+  ${QFORGE_CUDA_INCLUDE_DIRS}
+)
+
+target_link_directories(qforge_detector PRIVATE
+  ${QFORGE_TRT_LIB_DIRS}
+  ${QFORGE_CUDA_LIB_DIRS}
+)
+
+target_link_libraries(qforge_detector PRIVATE
+  ${QFORGE_TRT_LIBS}
+  ${QFORGE_CUDA_LIBS}
+)
+
+if(MSVC)
+  target_compile_options(qforge_detector PRIVATE /W3 /EHsc /utf-8 /MP)
+  target_compile_definitions(qforge_detector PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
+# 复制运行期依赖的 DLL 到产物目录，使程序可直接运行（TensorRT/CUDA 由 pip 包提供）
+foreach(dll_dir IN LISTS QFORGE_RUNTIME_DLL_DIRS)
+  if(EXISTS "${dll_dir}")
+    file(GLOB QFORGE_DLLS "${dll_dir}/*.dll")
+    if(QFORGE_DLLS)
+      add_custom_command(TARGET qforge_detector POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${QFORGE_DLLS} $<TARGET_FILE_DIR:qforge_detector>
+        COMMENT "复制运行期 DLL 到产物目录")
+    endif()
+  endif()
+endforeach()

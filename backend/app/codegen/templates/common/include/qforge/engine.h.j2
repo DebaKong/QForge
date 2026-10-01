@@ -1,0 +1,53 @@
+// 生成文件：TensorRT Engine 封装（公共推理底座，SPEC 11.1 / 11.3）
+#pragma once
+
+#include <NvInfer.h>
+
+#include <cstddef>
+#include <string>
+#include <vector>
+
+#include "qforge/cuda_utils.h"
+#include "qforge/logger.h"
+
+namespace qforge {
+
+struct TensorBinding {
+  std::string name;
+  nvinfer1::Dims dims;
+  nvinfer1::DataType dtype;
+  bool is_input = false;
+  std::size_t element_count = 0;
+  std::size_t bytes = 0;
+  DeviceBuffer device;
+};
+
+/// 加载 Engine 并执行推理；输入输出张量按名称访问
+class TrtEngine {
+ public:
+  explicit TrtEngine(const std::string& engine_path, int verbosity = 1);
+  TrtEngine(const TrtEngine&) = delete;
+  TrtEngine& operator=(const TrtEngine&) = delete;
+  ~TrtEngine();
+
+  const std::vector<TensorBinding>& inputs() const { return inputs_; }
+  const std::vector<TensorBinding>& outputs() const { return outputs_; }
+  const TensorBinding& input(std::size_t index = 0) const { return inputs_.at(index); }
+  const TensorBinding& output(std::size_t index = 0) const { return outputs_.at(index); }
+
+  /// 执行一次同步推理；tensor 数据为 float32 主机内存，顺序与 inputs() 一致
+  std::vector<std::vector<float>> infer(const std::vector<std::vector<float>>& host_inputs);
+
+ private:
+  void collect_bindings();
+
+  Logger logger_;
+  nvinfer1::IRuntime* runtime_ = nullptr;
+  nvinfer1::ICudaEngine* engine_ = nullptr;
+  nvinfer1::IExecutionContext* context_ = nullptr;
+  CudaStream stream_;
+  std::vector<TensorBinding> inputs_;
+  std::vector<TensorBinding> outputs_;
+};
+
+}  // namespace qforge

@@ -16,7 +16,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config.settings import get_settings
-from app.errors import ConflictError, ErrorCode, NotFoundError, ValidationFailedError
+from app.errors import (
+    ConflictError,
+    ErrorCode,
+    NotFoundError,
+    ResourceLimitError,
+    ValidationFailedError,
+)
 from app.models.artifact import Artifact, JobLog
 from app.models.dataset import Dataset
 from app.models.onnx_model import OnnxModel
@@ -285,10 +291,14 @@ def describe_transitions(session: Session, task_id: str) -> dict[str, Any]:
 
 
 def enqueue_task(session: Session, task_id: str) -> Task:
-    """CREATED -> QUEUED 并投递 Celery 任务。
+    """CREATED -> QUEUED 并投递执行。
 
-    先提交事务再投递：Worker（含 eager 模式下的同步执行）必须能读到已提交的任务行，
-    否则会因读不到任务或 SQLite 写锁竞争而失败。
+    执行方式由 `executor_mode` 决定（SPEC 3.1：Web API 不直接执行长任务）：
+    - local：进程内后台线程执行器，本请求立即返回；
+    - celery：投递到真实 broker（接入 Redis 后使用）。
+
+    顺序要求：先提交事务再投递——Worker（含本地执行器线程）必须能读到已提交的任务行；
+    并发已满时在状态迁移**之前**就拒绝，避免任务卡在 QUEUED 无法回退。
     """
     task = get_task(session, task_id)
     if task.status is not TaskStatus.CREATED:
@@ -297,8 +307,30 @@ def enqueue_task(session: Session, task_id: str) -> Task:
             detail={"task_id": task.id, "status": task.status.value},
         )
 
+    settings = get_settings()
+    executor = None
+    if settings.executor_mode == "local":
+        from app.services.executor import get_executor
+
+        executor = get_executor()
+        if not executor.has_capacity():
+            raise ResourceLimitError(
+                f"并发任务数已达上限 {executor.max_concurrent}，请等待当前任务结束后重试",
+                detail={
+                    "max_concurrent_tasks": executor.max_concurrent,
+                    "running_tasks": executor.running_ids(),
+                },
+            )
+
     transition(session, task, TaskStatus.QUEUED, message="任务已入队，等待 Worker 领取")
     session.commit()
+
+    if executor is not None:
+        from app.pipeline import run_pipeline
+
+        executor.submit(task.id, run_pipeline, task.id)
+        session.refresh(task)
+        return task
 
     # 延迟导入：避免 API 进程启动即依赖 Worker 模块
     from workers.tasks import run_task_pipeline

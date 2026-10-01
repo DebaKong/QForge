@@ -27,6 +27,16 @@ from app.config.settings import get_settings  # noqa: E402
 from app.db import base as db_base  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolate_task_executor() -> Iterator[None]:
+    """每个用例前后重置进程内任务执行器，避免后台线程跨用例串库。"""
+    from app.services.executor import reset_executor
+
+    reset_executor()
+    yield
+    reset_executor()
+
+
 @pytest.fixture()
 def storage_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "storage"

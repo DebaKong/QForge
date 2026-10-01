@@ -1,0 +1,180 @@
+// 生成文件：检测程序入口（SPEC 11.3：加载 Engine → 运行样例输入 → 输出结构化结果）
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "qforge/detector.h"
+#include "qforge/engine.h"
+#include "qforge/generated_config.h"
+#include "qforge/image_io.h"
+#include "qforge/preprocess.h"
+
+namespace {
+
+struct Args {
+  std::string engine;
+  std::string image;
+  std::string tensor;
+  std::string output;
+  std::string dump_raw;
+  int iterations = 1;
+  int verbosity = 1;
+  bool restore = false;
+};
+
+void print_usage() {
+  std::cerr << "用法: qforge_detector --engine <model.engine> [--image <input.ppm>] "
+               "[--tensor <input.f32>] [--output <result.json>] [--dump-raw <raw.f32>] "
+               "[--iterations N] [--restore] [--verbose]\n";
+}
+
+Args parse_args(int argc, char** argv) {
+  Args args;
+  for (int index = 1; index < argc; ++index) {
+    const std::string flag = argv[index];
+    const auto next = [&](const char* name) -> std::string {
+      if (index + 1 >= argc) {
+        throw std::runtime_error(std::string("参数缺少取值: ") + name);
+      }
+      return argv[++index];
+    };
+    if (flag == "--engine") {
+      args.engine = next("--engine");
+    } else if (flag == "--image") {
+      args.image = next("--image");
+    } else if (flag == "--tensor") {
+      args.tensor = next("--tensor");
+    } else if (flag == "--output") {
+      args.output = next("--output");
+    } else if (flag == "--dump-raw") {
+      args.dump_raw = next("--dump-raw");
+    } else if (flag == "--iterations") {
+      args.iterations = std::max(1, std::atoi(next("--iterations").c_str()));
+    } else if (flag == "--restore") {
+      args.restore = true;
+    } else if (flag == "--verbose") {
+      args.verbosity = 2;
+    } else if (flag == "--help" || flag == "-h") {
+      print_usage();
+      std::exit(0);
+    } else {
+      throw std::runtime_error("未知参数: " + flag);
+    }
+  }
+  return args;
+}
+
+std::string shape_to_json(const nvinfer1::Dims& dims) {
+  std::ostringstream stream;
+  stream << "[";
+  for (int index = 0; index < dims.nbDims; ++index) {
+    if (index > 0) {
+      stream << ",";
+    }
+    stream << dims.d[index];
+  }
+  stream << "]";
+  return stream.str();
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  try {
+    const Args args = parse_args(argc, argv);
+    if (args.engine.empty()) {
+      print_usage();
+      return 2;
+    }
+
+    qforge::TrtEngine engine(args.engine, args.verbosity);
+
+    std::vector<float> input_data;
+    qforge::PreprocessResult prep;
+    bool has_preprocess = false;
+
+    if (!args.tensor.empty()) {
+      input_data = qforge::load_raw_tensor(args.tensor, engine.input(0).element_count);
+    } else if (!args.image.empty()) {
+      const qforge::Image image = qforge::load_ppm(args.image);
+      prep = qforge::preprocess_image(image);
+      has_preprocess = true;
+      input_data = prep.tensor;
+    } else {
+      throw std::runtime_error("必须提供 --image 或 --tensor 作为样例输入");
+    }
+
+    // 预热一次（首个推理包含惰性初始化，不计入时延统计）
+    std::vector<std::vector<float>> outputs = engine.infer({input_data});
+
+    double total_ms = 0.0;
+    for (int iteration = 0; iteration < args.iterations; ++iteration) {
+      const auto started = std::chrono::steady_clock::now();
+      outputs = engine.infer({input_data});
+      const auto finished = std::chrono::steady_clock::now();
+      total_ms +=
+          std::chrono::duration<double, std::milli>(finished - started).count();
+    }
+
+    qforge::DetectionResult result = qforge::run_detection(outputs.at(0));
+
+    if (args.restore && has_preprocess) {
+      for (qforge::Detection& detection : result.detections) {
+        qforge::restore_box(detection.x1, detection.y1, detection.x2, detection.y2, prep);
+      }
+    }
+
+    if (!args.dump_raw.empty()) {
+      qforge::save_raw_tensor(args.dump_raw, outputs.at(0));
+    }
+
+    std::ostringstream json;
+    json << std::fixed << std::setprecision(6);
+    json << "{";
+    json << "\"status\":\"ok\",";
+    json << "\"precision\":\"" << qforge::config::kPrecision << "\",";
+    json << "\"architecture\":\"" << qforge::config::kArchitecture << "\",";
+    json << "\"backend\":\"" << qforge::config::kBackendName << "\",";
+    json << "\"input_shape\":" << shape_to_json(engine.input(0).dims) << ",";
+    json << "\"output_shape\":" << shape_to_json(engine.output(0).dims) << ",";
+    json << "\"input_elements\":" << engine.input(0).element_count << ",";
+    json << "\"output_elements\":" << engine.output(0).element_count << ",";
+    json << "\"iterations\":" << args.iterations << ",";
+    json << "\"latency_ms_avg\":" << (total_ms / args.iterations) << ",";
+    json << "\"candidates\":" << result.candidates << ",";
+    json << "\"detections_count\":" << result.detections.size() << ",";
+    json << "\"restored\":" << (args.restore && has_preprocess ? "true" : "false") << ",";
+    json << "\"detections\":[";
+    for (std::size_t index = 0; index < result.detections.size(); ++index) {
+      const qforge::Detection& detection = result.detections[index];
+      if (index > 0) {
+        json << ",";
+      }
+      json << "{\"class_id\":" << detection.class_id << ",\"score\":" << detection.score
+           << ",\"box\":[" << detection.x1 << "," << detection.y1 << "," << detection.x2
+           << "," << detection.y2 << "]}";
+    }
+    json << "]}";
+
+    const std::string payload = json.str();
+    std::cout << payload << std::endl;
+    if (!args.output.empty()) {
+      std::ofstream stream(args.output, std::ios::binary);
+      if (!stream) {
+        throw std::runtime_error("无法写入结果文件: " + args.output);
+      }
+      stream << payload;
+    }
+    return 0;
+  } catch (const std::exception& error) {
+    std::cerr << "[qforge][ERROR] " << error.what() << std::endl;
+    return 1;
+  }
+}

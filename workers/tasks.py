@@ -1,13 +1,13 @@
 """Celery 任务定义。
 
-阶段 0 只有两个任务，用途是把「API -> 队列 -> Worker -> 任务状态/日志」的接线打通：
-- `probe`：不触碰数据库的接线自检；
-- `run_task_pipeline`：占位流水线。
+阶段 1 起，Worker 执行的是**真实流水线**，与进程内执行器调用同一个 `run_pipeline`：
 
-明确不做的事（AGENTS.md：非本 Phase 不实现、禁止伪造结果）：
-- 不执行真实校验、量化、Engine 构建、代码生成、编译或推理；
-- 不把任务标记为 SUCCESS；
-- 因此被领取的任务会停留在 QUEUED，并在 job_logs 中记录原因，等待阶段 1 接续实现。
+- `probe`：接线自检；
+- `run_task_pipeline`：执行完整流水线（校验 → 预处理 → 量化 → Engine → 代码生成 →
+  编译 → 运行验证 → 打包），进度、精度与失败原因全部落库并写日志。
+
+无 Redis 时由 `app.services.executor.LocalTaskExecutor` 在进程内后台线程调用同一函数，
+因此两种执行方式行为一致（SPEC 3.1：Web API 不直接执行长任务）。
 """
 
 from __future__ import annotations
@@ -19,10 +19,6 @@ from workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-PHASE0_PLACEHOLDER_NOTE = (
-    "阶段 0 占位实现：真实流水线（VALIDATING 起）在阶段 1 落地，任务保持 QUEUED"
-)
-
 
 @celery_app.task(name="qforge.probe", bind=True)
 def probe(self: Any) -> dict[str, Any]:
@@ -31,53 +27,14 @@ def probe(self: Any) -> dict[str, Any]:
         "task": "qforge.probe",
         "worker": self.request.hostname,
         "status": "ok",
-        "phase": "phase-0",
     }
 
 
 @celery_app.task(name="qforge.run_task_pipeline", bind=True)
 def run_task_pipeline(self: Any, task_id: str) -> dict[str, Any]:
-    """阶段 0 占位流水线：只登记领取记录，不推进阶段状态。"""
-    from app.db.base import session_scope
-    from app.services import task_service
-    from app.services.task_state import TaskStatus
+    """执行完整部署流水线（真实实现见 app/pipeline/runner.py）。"""
+    from app.pipeline import run_pipeline
 
-    worker_id = self.request.hostname or "inline-eager"
-
-    with session_scope() as session:
-        task = task_service.get_task(session, task_id)
-
-        if task.status is not TaskStatus.QUEUED:
-            task_service.append_log(
-                session,
-                task,
-                f"占位流水线跳过：任务状态为 {task.status.value}，仅 QUEUED 任务会被领取",
-                stage=task.status.value,
-                level="WARNING",
-            )
-            return {
-                "task_id": task_id,
-                "status": task.status.value,
-                "executed": False,
-                "phase": "phase-0",
-            }
-
-        task.worker_id = worker_id
-        task_service.append_log(
-            session,
-            task,
-            f"Worker({worker_id}) 已领取任务。{PHASE0_PLACEHOLDER_NOTE}",
-            stage=TaskStatus.QUEUED.value,
-        )
-        logger.info(
-            "占位流水线已领取任务",
-            extra={"task_id": task_id, "stage": TaskStatus.QUEUED.value, "worker_id": worker_id},
-        )
-        return {
-            "task_id": task_id,
-            "status": task.status.value,
-            "executed": True,
-            "worker_id": worker_id,
-            "next_stage": task_service.next_status(task.status).value if task_service.next_status(task.status) else None,
-            "phase": "phase-0",
-        }
+    worker_id = self.request.hostname or "celery-worker"
+    logger.info("Celery 领取任务", extra={"task_id": task_id, "worker_id": worker_id})
+    return run_pipeline(task_id, worker_id=worker_id)

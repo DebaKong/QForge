@@ -1,0 +1,61 @@
+# {{ model.architecture }} {{ model.task }} 推理工程（由 QForge 生成）
+
+- 任务 ID：`{{ task_id }}`
+- 精度模式：**{{ precision_label }}**
+- 架构：{{ model.architecture }}　后端：{{ backend.name }} {{ backend.version }}
+- GPU 架构：{{ backend.gpu_arch }}　CUDA：{{ backend.cuda_version }}
+- 生成时间：{{ generated_at }}
+
+## 目录结构
+
+```text
+.
+├── CMakeLists.txt          构建脚本（依赖路径已在生成时注入）
+├── config/model.yaml       模型 / 预处理 / 后处理配置（与生成代码同源）
+├── include/qforge/         头文件（公共推理底座 + 任务 + 模型适配器）
+├── src/                    实现
+└── test/                   样例输入说明
+```
+
+## 构建
+
+```bat
+call "<Visual Studio>\VC\Auxiliary\Build\vcvars64.bat"
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+```
+
+生成产物为 `build/qforge_detector.exe`（Windows 下为 `qforge_detector.exe`）。
+
+## 运行
+
+```bat
+:: 用图像（PPM P6）作为输入，预处理在程序内完成
+qforge_detector.exe --engine {{ engine_filename }} --image test/sample.ppm --restore
+
+:: 或用平台预处理好的张量（float32、NCHW、行优先）
+qforge_detector.exe --engine {{ engine_filename }} --tensor test/sample.f32
+```
+
+程序会把结构化结果以 JSON 打印到标准输出（同时可用 `--output` 写入文件）：
+
+- `output_shape` / `input_shape`：Engine 的实际张量形状（用于验证加载是否成功）
+- `latency_ms_avg`：平均推理时延（毫秒，已排除首次预热）
+- `detections`：后处理结果（类别、置信度、坐标）
+- `candidates`：置信度过滤后、NMS 之前的候选数量
+
+## 预处理一致性（重要）
+
+`include/qforge/generated_config.h` 中的预处理参数与平台 Python 侧完全一致
+（同一份 Model Definition 渲染）。**若修改这里的分辨率、mean/std 或颜色顺序，
+必须同步修改平台侧配置**，否则 INT8 校准与推理输入分布不一致会导致精度下降。
+
+## 输入格式说明
+
+- 图像：二进制 PPM（P6，maxval=255）。用 OpenCV/PIL 转换：
+  `cv2.imwrite("sample.ppm", image)`（Python 侧已由平台自动完成）
+- 张量：纯 float32 裸数据，形状与模型输入一致（NCHW，行优先），可用
+  `numpy.ndarray.tofile()` 生成。
+
+之所以只支持这两种格式，是为了让生成的工程**不依赖 OpenCV 等额外图像库**，
+从而在任何装有 TensorRT + CUDA 运行时的机器上都能直接编译运行。

@@ -1,0 +1,21 @@
+# test/ 样例输入说明（SPEC 11.2 生成物）
+
+QForge 在**运行验证阶段**会自动把样例输入写入本目录（如果没有则说明尚未执行验证）：
+
+| 文件 | 说明 |
+| --- | --- |
+| `sample.ppm` | 由校准集（或测试集）第一张图像转换而来的 PPM(P6) 图像 |
+| `sample.f32` | 平台按 Model Definition 预处理后的张量（float32、NCHW、行优先） |
+| `expected_output.json` | 平台侧（Python）跑同一张图得到的参考输出，用于人工对照 |
+
+对应的验证命令（平台实际执行的就是这一条）：
+
+```bat
+qforge_detector.exe --engine {{ engine_filename }} --image test/sample.ppm --output test/result.json --dump-raw test/output.f32
+```
+
+验证判定标准（SPEC 11.3）：
+
+1. 程序退出码为 0；
+2. 输出 JSON 中 `input_shape` / `output_shape` 与 Engine 一致；
+3. 检测结果结构合法（坐标为有限数值、置信度在 [0,1]、类别号在 `[0, {{ model.class_count }})`）。

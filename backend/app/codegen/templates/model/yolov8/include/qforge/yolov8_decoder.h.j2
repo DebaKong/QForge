@@ -1,0 +1,18 @@
+// 生成文件：{{ model.architecture }} 模型适配器模板（SPEC 11.1 model/{{ model.architecture }}）
+// 只负责该模型族的输出布局语义，任务逻辑（过滤/NMS）在 task 模板中，二者解耦。
+#pragma once
+
+#include <vector>
+
+#include "qforge/detector.h"
+
+namespace qforge {
+
+/// 解析 {{ model.architecture }} 输出布局：
+///   张量形状约定 [1, 4 + class_count(+1), anchors]，box 为 {{ model.box_format }}，
+///   objectness {{ "存在" if model.has_objectness else "不存在" }}，类别分数已过激活函数。
+/// data 指向去掉 batch 维后连续存放的 (channels, anchors) 数据。
+void decode_yolov8(const float* data, int channels, int anchors,
+                   std::vector<Detection>& out);
+
+}  // namespace qforge

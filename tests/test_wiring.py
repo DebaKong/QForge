@@ -28,7 +28,6 @@ def test_probe_task_runs_and_returns_result() -> None:
     payload: dict[str, Any] = result.get()
     assert payload["status"] == "ok"
     assert payload["task"] == "qforge.probe"
-    assert payload["phase"] == "phase-0"
 
 
 def test_health_reports_phase_and_environment(client: TestClient) -> None:
@@ -36,7 +35,7 @@ def test_health_reports_phase_and_environment(client: TestClient) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["phase"] == "phase-0"
+    assert body["phase"] == "phase-1"
     assert body["celery_eager"] is True
     assert body["database"].startswith("sqlite:ok")
     assert "password" not in response.text.lower()

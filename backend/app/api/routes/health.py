@@ -38,5 +38,5 @@ def health(session: SessionDep) -> HealthResponse:
         database=f"{dialect}:{database_state}",
         storage_root=str(settings.resolved_storage_root),
         celery_eager=settings.celery_task_always_eager,
-        phase="phase-0",
+        phase="phase-1",
     )

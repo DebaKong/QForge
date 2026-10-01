@@ -11,6 +11,7 @@ const tasks = ref([])
 const selectedId = ref(route.params.id || '')
 const task = ref(null)
 const logs = ref([])
+const artifacts = ref([])
 const transitions = ref(null)
 const autoRefresh = ref(true)
 let timer = null
@@ -37,6 +38,7 @@ async function loadDetail() {
     task.value = await api.getTask(selectedId.value)
     logs.value = await api.getTaskLogs(selectedId.value)
     transitions.value = await api.getTaskTransitions(selectedId.value)
+    artifacts.value = await api.getTaskArtifacts(selectedId.value)
   } catch (error) {
     ElMessage.error(error.message)
   }
@@ -136,6 +138,22 @@ onUnmounted(() => {
           <el-table-column prop="stage" label="阶段" min-width="140" />
           <el-table-column prop="level" label="级别" width="90" />
           <el-table-column prop="message" label="消息" min-width="280" />
+        </el-table>
+
+        <el-divider content-position="left">产物（Engine / C++ 工程 / 报告 / 归档）</el-divider>
+        <el-table :data="artifacts" max-height="260" empty-text="尚无产物（任务未跑到 PACKAGING 阶段）">
+          <el-table-column prop="kind" label="类型" width="110" />
+          <el-table-column prop="relative_path" label="相对路径" min-width="280" />
+          <el-table-column label="大小" width="110">
+            <template #default="{ row }">
+              {{ row.size_bytes ? (row.size_bytes / 1024).toFixed(1) + ' KB' : '—' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="下载" width="100">
+            <template #default="{ row }">
+              <a :href="api.artifactDownloadUrl(task.id, row.id)" target="_blank">下载</a>
+            </template>
+          </el-table-column>
         </el-table>
       </el-card>
 

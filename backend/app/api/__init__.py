@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.routes import datasets, health, models, projects, tasks
+from app.api.routes import datasets, health, models, projects, tasks, uploads
 
 
 def build_api_router() -> APIRouter:
@@ -12,4 +12,5 @@ def build_api_router() -> APIRouter:
     router.include_router(models.router)
     router.include_router(datasets.router)
     router.include_router(tasks.router)
+    router.include_router(uploads.router)
     return router

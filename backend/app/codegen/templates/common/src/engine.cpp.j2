@@ -1,0 +1,139 @@
+// 生成文件：TensorRT Engine 实现（公共推理底座）
+#include "qforge/engine.h"
+
+#include <fstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace qforge {
+namespace {
+
+std::vector<char> read_file(const std::string& path) {
+  std::ifstream stream(path, std::ios::binary | std::ios::ate);
+  if (!stream) {
+    throw std::runtime_error("无法打开 Engine 文件: " + path +
+                             "（请先确认 Engine 已构建，且路径为绝对路径）");
+  }
+  const std::streamsize size = stream.tellg();
+  stream.seekg(0, std::ios::beg);
+  std::vector<char> buffer(static_cast<std::size_t>(size));
+  if (!stream.read(buffer.data(), size)) {
+    throw std::runtime_error("读取 Engine 文件失败: " + path);
+  }
+  return buffer;
+}
+
+std::size_t volume(const nvinfer1::Dims& dims) {
+  std::size_t total = 1;
+  for (int i = 0; i < dims.nbDims; ++i) {
+    total *= static_cast<std::size_t>(dims.d[i]);
+  }
+  return total;
+}
+
+std::size_t element_size(nvinfer1::DataType dtype) {
+  switch (dtype) {
+    case nvinfer1::DataType::kFLOAT: return 4;
+    case nvinfer1::DataType::kHALF: return 2;
+    case nvinfer1::DataType::kINT32: return 4;
+    case nvinfer1::DataType::kINT8: return 1;
+    case nvinfer1::DataType::kBOOL: return 1;
+    default: throw std::runtime_error("不支持的张量数据类型");
+  }
+}
+
+}  // namespace
+
+TrtEngine::TrtEngine(const std::string& engine_path, int verbosity)
+    : logger_(verbosity >= 2 ? nvinfer1::ILogger::Severity::kVERBOSE
+                             : nvinfer1::ILogger::Severity::kWARNING) {
+  const std::vector<char> blob = read_file(engine_path);
+  runtime_ = nvinfer1::createInferRuntime(logger_);
+  if (runtime_ == nullptr) {
+    throw std::runtime_error("创建 TensorRT Runtime 失败");
+  }
+
+  engine_ = runtime_->deserializeCudaEngine(blob.data(), blob.size());
+  if (engine_ == nullptr) {
+    throw std::runtime_error(
+        "Engine 反序列化失败：该 Engine 可能由不同版本的 TensorRT/CUDA/GPU 构建"
+        "（SPEC 15：Engine 不兼容时必须显式失败）");
+  }
+
+  context_ = engine_->createExecutionContext();
+  if (context_ == nullptr) {
+    throw std::runtime_error("创建执行上下文失败");
+  }
+
+  collect_bindings();
+}
+
+TrtEngine::~TrtEngine() {
+  if (context_ != nullptr) {
+    delete context_;
+  }
+  if (engine_ != nullptr) {
+    delete engine_;
+  }
+  if (runtime_ != nullptr) {
+    delete runtime_;
+  }
+}
+
+void TrtEngine::collect_bindings() {
+  const int count = engine_->getNbIOTensors();
+  for (int index = 0; index < count; ++index) {
+    const char* name = engine_->getIOTensorName(index);
+    TensorBinding binding;
+    binding.name = name;
+    binding.dims = engine_->getTensorShape(name);
+    binding.dtype = engine_->getTensorDataType(name);
+    binding.is_input = engine_->getTensorIOMode(name) == nvinfer1::TensorIOMode::kINPUT;
+    binding.element_count = volume(binding.dims);
+    binding.bytes = binding.element_count * element_size(binding.dtype);
+    binding.device.allocate(binding.bytes);
+
+    if (!context_->setTensorAddress(name, binding.device.data())) {
+      throw std::runtime_error(std::string("绑定张量地址失败: ") + name);
+    }
+
+    if (binding.is_input) {
+      inputs_.push_back(std::move(binding));
+    } else {
+      outputs_.push_back(std::move(binding));
+    }
+  }
+}
+
+std::vector<std::vector<float>> TrtEngine::infer(
+    const std::vector<std::vector<float>>& host_inputs) {
+  if (host_inputs.size() != inputs_.size()) {
+    throw std::runtime_error("输入张量数量与 Engine 不一致");
+  }
+
+  for (std::size_t index = 0; index < inputs_.size(); ++index) {
+    const TensorBinding& binding = inputs_[index];
+    if (host_inputs[index].size() != binding.element_count) {
+      throw std::runtime_error("输入 " + binding.name + " 元素数量与 Engine 不一致");
+    }
+    inputs_[index].device.copy_from_host(host_inputs[index].data(), binding.bytes);
+  }
+
+  if (!context_->enqueueV3(stream_.get())) {
+    throw std::runtime_error("TensorRT 推理执行失败（enqueueV3 返回 false）");
+  }
+  stream_.synchronize();
+
+  std::vector<std::vector<float>> results;
+  results.reserve(outputs_.size());
+  for (const TensorBinding& binding : outputs_) {
+    std::vector<float> host(binding.element_count, 0.0f);
+    binding.device.copy_to_host(host.data(), binding.bytes);
+    results.push_back(std::move(host));
+  }
+  return results;
+}
+
+}  // namespace qforge

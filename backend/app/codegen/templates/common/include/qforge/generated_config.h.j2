@@ -1,0 +1,53 @@
+// 生成文件：编译期固化的模型与后处理配置（SPEC 11.2 config）
+// 与 config/model.yaml 由同一份 TaskConfig / Model Definition 快照渲染，二者不会漂移。
+// 采用编译期常量是为了让生成的工程不依赖 YAML/JSON 解析库，减少部署面依赖。
+#pragma once
+
+#include <array>
+#include <cstdint>
+
+namespace qforge {
+namespace config {
+
+// ---- 任务 ----
+inline constexpr const char* kTaskId = {{ task_id|cpp }};
+inline constexpr const char* kPrecision = {{ precision_label|cpp }};
+inline constexpr const char* kGeneratedAt = {{ generated_at|cpp }};
+inline constexpr const char* kArchitecture = {{ model.architecture|cpp }};
+inline constexpr const char* kTaskType = {{ model.task|cpp }};
+
+// ---- 输入张量 ----
+inline constexpr const char* kInputName = {{ model.input_name|cpp }};
+inline constexpr int kInputBatch = {{ input_shape[0] }};
+inline constexpr int kInputChannels = {{ input_shape[1] }};
+inline constexpr int kInputHeight = {{ input_shape[2] }};
+inline constexpr int kInputWidth = {{ input_shape[3] }};
+inline constexpr const char* kInputLayout = {{ model.input_layout|cpp }};
+
+// ---- 输出张量 ----
+inline constexpr const char* kOutputName = {{ model.output_name|cpp }};
+inline constexpr int kClassCount = {{ model.class_count }};
+inline constexpr bool kHasObjectness = {{ model.has_objectness|cpp }};
+inline constexpr const char* kBoxFormat = {{ model.box_format|cpp }};
+inline constexpr const char* kDecoder = {{ model.decoder|cpp }};
+
+// ---- 预处理（必须与平台 Python 侧完全一致，否则量化精度会下降）----
+inline constexpr const char* kResize = {{ model.resize|cpp }};
+inline constexpr const char* kColorOrder = {{ model.color|cpp }};
+inline constexpr float kScale = {{ model.scale|cpp }};
+inline constexpr float kPadValue = {{ model.pad_value|cpp }};
+inline constexpr std::array<float, {{ model.mean|length }}> kMean = { {{ model.mean|cpp }} };
+inline constexpr std::array<float, {{ model.std|length }}> kStd = { {{ model.std|cpp }} };
+
+// ---- 后处理 ----
+inline constexpr const char* kNmsType = {{ model.nms_type|cpp }};
+inline constexpr float kConfidenceThreshold = {{ model.confidence_threshold|cpp }};
+inline constexpr float kIouThreshold = {{ model.iou_threshold|cpp }};
+
+// ---- Engine ----
+inline constexpr const char* kEngineFilename = {{ engine_filename|cpp }};
+inline constexpr const char* kBackendName = {{ backend.name|cpp }};
+inline constexpr const char* kBackendVersion = {{ backend.version|cpp }};
+
+}  // namespace config
+}  // namespace qforge

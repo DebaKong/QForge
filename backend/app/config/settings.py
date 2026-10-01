@@ -56,13 +56,46 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
     # ---- 资源与安全限制（SPEC 15）----
-    # 阶段 0 只定义配置项与默认值；上传校验、ZIP 限额、并发与超时的强制执行在阶段 1 落地。
+    # 阶段 1 起强制执行（上传校验、ZIP 限额、并发与超时）
     max_upload_mb: int = 2048
     max_zip_uncompressed_mb: int = 8192
     max_zip_entries: int = 20000
     max_zip_depth: int = 8
     task_timeout_seconds: int = 3600
     max_concurrent_tasks: int = 1
+
+    # ---- 任务执行方式（SPEC 3.1：Web API 不直接执行长任务）----
+    # local：进程内后台线程执行器（阶段 1 无 Redis 时的路径，入队请求立即返回）
+    # celery：投递到真实 broker（接入 Redis 后切换，业务代码无需改动）
+    executor_mode: Literal["local", "celery"] = "local"
+
+    # ---- 上传与归档（SPEC 8.2 / 15）----
+    allowed_model_extensions: list[str] = [".onnx"]
+    allowed_image_extensions: list[str] = [".jpg", ".jpeg", ".png", ".bmp", ".webp"]
+    max_calibration_images: int = 5000
+
+    # ---- 构建与运行验证工具链（SPEC 11.3）----
+    # None 表示自动探测：cmake 用 PATH（qforge 内 pip 安装的 cmake），
+    # vcvars 用 vswhere 与常见安装路径探测（本机为 D:\vs2019）
+    cmake_executable: str | None = None
+    vcvars_path: Path | None = None
+    build_timeout_seconds: int = 900
+    run_verify_timeout_seconds: int = 300
+
+    # ---- TensorRT（SPEC 10）----
+    trt_workspace_gb: int = 2
+    calibration_batch_size: int = 8
+    calibration_cache_filename: str = "calibration.cache"
+
+    # ---- C++ 构建所需的开发文件（阶段 1 实测：pip 只提供运行库 DLL）----
+    # 留空则自动探测常见位置（含 D:\qforge-toolchain 下的 TensorRT/CUDA 分发包）；
+    # 指向包含 include/ 与 lib/ 的目录。
+    tensorrt_root: Path | None = None
+    cuda_root: Path | None = None
+    toolchain_search_roots: list[Path] = [
+        Path("D:/qforge-toolchain"),
+        Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA"),
+    ]
 
     @property
     def resolved_storage_root(self) -> Path:

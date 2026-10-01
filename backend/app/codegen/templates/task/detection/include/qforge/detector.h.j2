@@ -1,0 +1,29 @@
+// 生成文件：检测任务模板（SPEC 11.1 task/detection）
+#pragma once
+
+#include <cstddef>
+#include <string>
+#include <vector>
+
+namespace qforge {
+
+struct Detection {
+  float x1 = 0.0f;
+  float y1 = 0.0f;
+  float x2 = 0.0f;
+  float y2 = 0.0f;
+  float score = 0.0f;
+  int class_id = 0;
+};
+
+struct DetectionResult {
+  std::vector<Detection> detections;
+  int channels = 0;
+  int anchors = 0;
+  int candidates = 0;  // 置信度过滤后、NMS 之前的候选数量
+};
+
+/// 解码 + 置信度过滤 + NMS（解码布局由模型适配器模板提供）
+DetectionResult run_detection(const std::vector<float>& raw_output);
+
+}  // namespace qforge

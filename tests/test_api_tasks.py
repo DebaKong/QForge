@@ -1,13 +1,15 @@
-"""Task API 与流水线接线测试（SPEC 13 / 16.1）。
+"""Task API 与流水线测试（SPEC 13 / 16.1）。
 
-阶段 0 的语义边界在这里被固定下来：
-- 创建任务 = 落状态 + 落配置快照 + 建存储目录，不执行真实流水线；
-- 入队后任务停在 QUEUED（占位 Worker 不推进阶段），并且必须留下日志；
-- 不存在的阶段产物（报告）返回 501，而不是伪造数据。
+阶段 1 的语义边界在这里固定下来：
+- 创建任务 = 落状态 + 落配置快照 + 建存储目录，不阻塞请求；
+- 入队后任务在**后台执行器**中真实执行流水线，入队请求立即返回；
+- 失败必须是结构化错误码（不伪造成功）；
+- 尚未产出精度结果的报告接口返回 501，而不是返回空数据。
 """
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -130,28 +132,37 @@ def test_model_from_other_project_is_rejected(client: TestClient) -> None:
     assert response.json()["error_code"] == "CONFLICT"
 
 
-def test_enqueue_dispatches_placeholder_worker_and_keeps_queued(
-    client: TestClient, storage_root: Path
-) -> None:
-    created = _create_task(client, _bootstrap(client))
+def _wait_for_terminal(client: TestClient, task_id: str, *, timeout: float = 60.0) -> dict:
+    """等待任务进入终态（阶段 1：任务在后台线程真实执行，需要轮询）。"""
+    deadline = time.time() + timeout
+    last: dict = {}
+    while time.time() < deadline:
+        last = client.get(f"/api/tasks/{task_id}").json()
+        if last["status"] in {"SUCCESS", "FAILED", "CANCELLED"}:
+            return last
+        time.sleep(0.1)
+    raise AssertionError(f"任务在 {timeout}s 内未进入终态：{last}")
+
+
+def test_enqueue_runs_pipeline_in_background_and_fails_without_model(client: TestClient) -> None:
+    """入队立即返回，任务在后台真实执行；缺模型时以结构化错误码失败。"""
+    created = client.post("/api/tasks", json={"precision": "fp16"}).json()
 
     enqueued = client.post(f"/api/tasks/{created['id']}/enqueue")
     assert enqueued.status_code == 200, enqueued.text
     body = enqueued.json()
+    # 入队即返回：此刻任务已离开 CREATED（后台线程可能已开始推进，故不断言具体阶段）
+    assert body["status"] in {"QUEUED", "VALIDATING", "FAILED"}
 
-    # 阶段 0：占位 Worker 不推进阶段，任务必须停在 QUEUED（不伪造 SUCCESS）
-    assert body["status"] == "QUEUED"
-    assert body["progress"] == 5
-    assert body["current_stage"] == "QUEUED"
-    assert body["started_at"] is not None
-    assert body["error_code"] is None
-    assert body["worker_id"], "占位 Worker 应记录领取者"
+    final = _wait_for_terminal(client, created["id"])
+    assert final["status"] == "FAILED"
+    assert final["error_code"] == "MODEL_INVALID"
+    assert final["finished_at"] is not None
 
     logs = client.get(f"/api/tasks/{created['id']}/logs").json()
     messages = [entry["message"] for entry in logs]
     assert any("已入队" in message for message in messages)
-    assert any("占位实现" in message for message in messages)
-    assert [entry["stage"] for entry in logs][-1] == "QUEUED"
+    assert any("模型" in message or "ONNX" in message for message in messages)
 
 
 def test_enqueue_is_rejected_outside_created_state(client: TestClient) -> None:

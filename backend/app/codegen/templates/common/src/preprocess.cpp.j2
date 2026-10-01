@@ -1,0 +1,135 @@
+// 生成文件：预处理实现
+#include "qforge/preprocess.h"
+
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "qforge/generated_config.h"
+
+namespace qforge {
+namespace {
+
+/// 双线性缩放（单通道），坐标映射与 OpenCV INTER_LINEAR 的半像素约定一致
+std::vector<unsigned char> resize_bilinear(const Image& image, int new_width, int new_height) {
+  std::vector<unsigned char> output(static_cast<std::size_t>(new_width) * new_height * 3, 0);
+  const double scale_x = static_cast<double>(image.width) / new_width;
+  const double scale_y = static_cast<double>(image.height) / new_height;
+
+  for (int y = 0; y < new_height; ++y) {
+    const double source_y = (y + 0.5) * scale_y - 0.5;
+    const int y0 = std::max(0, static_cast<int>(std::floor(source_y)));
+    const int y1 = std::min(image.height - 1, y0 + 1);
+    const double wy = std::min(1.0, std::max(0.0, source_y - y0));
+
+    for (int x = 0; x < new_width; ++x) {
+      const double source_x = (x + 0.5) * scale_x - 0.5;
+      const int x0 = std::max(0, static_cast<int>(std::floor(source_x)));
+      const int x1 = std::min(image.width - 1, x0 + 1);
+      const double wx = std::min(1.0, std::max(0.0, source_x - x0));
+
+      for (int c = 0; c < 3; ++c) {
+        const auto at = [&](int px, int py) {
+          return static_cast<double>(
+              image.pixels[(static_cast<std::size_t>(py) * image.width + px) * 3 + c]);
+        };
+        const double top = at(x0, y0) * (1.0 - wx) + at(x1, y0) * wx;
+        const double bottom = at(x0, y1) * (1.0 - wx) + at(x1, y1) * wx;
+        const double value = top * (1.0 - wy) + bottom * wy;
+        output[(static_cast<std::size_t>(y) * new_width + x) * 3 + c] =
+            static_cast<unsigned char>(std::min(255.0, std::max(0.0, value + 0.5)));
+      }
+    }
+  }
+  return output;
+}
+
+}  // namespace
+
+PreprocessResult preprocess_image(const Image& image) {
+  using namespace qforge::config;
+
+  PreprocessResult result;
+  result.original_width = image.width;
+  result.original_height = image.height;
+
+  const int target_w = kInputWidth;
+  const int target_h = kInputHeight;
+
+  std::vector<unsigned char> canvas(static_cast<std::size_t>(target_w) * target_h * 3,
+                                    static_cast<unsigned char>(kPadValue));
+  int resized_w = target_w;
+  int resized_h = target_h;
+  int pad_x = 0;
+  int pad_y = 0;
+
+  const std::string resize_mode(kResize);
+  if (resize_mode == "letterbox") {
+    const double scale =
+        std::min(static_cast<double>(target_w) / image.width,
+                 static_cast<double>(target_h) / image.height);
+    resized_w = std::max(1, static_cast<int>(std::round(image.width * scale)));
+    resized_h = std::max(1, static_cast<int>(std::round(image.height * scale)));
+    pad_x = (target_w - resized_w) / 2;
+    pad_y = (target_h - resized_h) / 2;
+    result.scale = static_cast<float>(scale);
+    result.pad_x = static_cast<float>(pad_x);
+    result.pad_y = static_cast<float>(pad_y);
+
+    const std::vector<unsigned char> resized = resize_bilinear(image, resized_w, resized_h);
+    for (int y = 0; y < resized_h; ++y) {
+      const std::size_t source_offset =
+          static_cast<std::size_t>(y) * resized_w * 3;
+      const std::size_t target_offset =
+          (static_cast<std::size_t>(y + pad_y) * target_w + pad_x) * 3;
+      std::copy_n(resized.begin() + static_cast<std::ptrdiff_t>(source_offset),
+                  static_cast<std::size_t>(resized_w) * 3,
+                  canvas.begin() + static_cast<std::ptrdiff_t>(target_offset));
+    }
+  } else if (resize_mode == "stretch") {
+    const std::vector<unsigned char> resized = resize_bilinear(image, target_w, target_h);
+    canvas = resized;
+    result.scale = static_cast<float>(
+        std::min(static_cast<double>(target_w) / image.width,
+                 static_cast<double>(target_h) / image.height));
+  } else {
+    throw std::runtime_error("当前生成的工程只支持 letterbox / stretch 预处理：" + resize_mode);
+  }
+
+  // 归一化 + NCHW（与平台 Python 侧 preprocess.to_tensor 一致）
+  result.tensor.assign(static_cast<std::size_t>(kInputChannels) * target_h * target_w, 0.0f);
+  const bool bgr = std::string(kColorOrder) == "BGR";
+
+  for (int y = 0; y < target_h; ++y) {
+    for (int x = 0; x < target_w; ++x) {
+      const std::size_t pixel = (static_cast<std::size_t>(y) * target_w + x) * 3;
+      for (int c = 0; c < 3; ++c) {
+        const int source_channel = bgr ? (2 - c) : c;
+        const float raw = static_cast<float>(canvas[pixel + source_channel]);
+        const float scaled = raw / kScale;
+        const float normalized = (scaled - kMean[static_cast<std::size_t>(c)]) /
+                                 kStd[static_cast<std::size_t>(c)];
+        const std::size_t index =
+            (static_cast<std::size_t>(c) * target_h + y) * target_w + x;
+        result.tensor[index] = normalized;
+      }
+    }
+  }
+  return result;
+}
+
+void restore_box(float& x1, float& y1, float& x2, float& y2, const PreprocessResult& info) {
+  const float scale = info.scale > 0.0f ? info.scale : 1.0f;
+  x1 = (x1 - info.pad_x) / scale;
+  y1 = (y1 - info.pad_y) / scale;
+  x2 = (x2 - info.pad_x) / scale;
+  y2 = (y2 - info.pad_y) / scale;
+  x1 = std::min(std::max(x1, 0.0f), static_cast<float>(info.original_width));
+  y1 = std::min(std::max(y1, 0.0f), static_cast<float>(info.original_height));
+  x2 = std::min(std::max(x2, 0.0f), static_cast<float>(info.original_width));
+  y2 = std::min(std::max(y2, 0.0f), static_cast<float>(info.original_height));
+}
+
+}  // namespace qforge

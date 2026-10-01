@@ -45,8 +45,9 @@ class ModelRead(ORMModel):
     sha256: str | None
     size_bytes: int | None
     opset: int | None
-    input_spec: dict[str, Any] | None
-    output_spec: dict[str, Any] | None
+    # 输入/输出可能有多个，因此是描述符列表（与 OnnxInspection.inputs/outputs 一致）
+    input_spec: list[dict[str, Any]] | None
+    output_spec: list[dict[str, Any]] | None
     model_definition: dict[str, Any] | None
     created_at: datetime
     updated_at: datetime
