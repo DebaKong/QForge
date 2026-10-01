@@ -1,0 +1,158 @@
+# ============================================================
+# QForge — ONNX 自动化量化部署平台
+# .gitignore
+# 约定：源码/配置/模板/文档入库；环境、依赖、运行时数据、产物、大二进制不入库
+# ============================================================
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.Python
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+.installed.cfg
+
+# 虚拟环境
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# 测试 / 类型检查 / 格式化的缓存与报告
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ---------- Node / Vue3 / Vite ----------
+node_modules/
+.pnpm-store/
+dist/
+dist-ssr/
+.vite/
+*.local
+.eslintcache
+.stylelintcache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.yarn/
+
+# ---------- 环境变量与密钥 ----------
+# 保留示例文件，真实配置一律不入库（SPEC 13.2：敏感信息不得写入日志/仓库）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials/
+
+# ---------- 运行时数据：storage/ 与 artifact/ ----------
+# SPEC 14.2 / 12.2：上传文件、中间文件、Engine、产物均属运行时数据
+storage/*
+!storage/.gitkeep
+artifact/
+artifacts/
+outputs/
+
+# 上传与中间产物（前端上传一律视为不可信，仅本地留存）
+uploads/
+temp/
+tmp/
+*.tmp
+
+# ---------- 模型与二进制产物（体积大，禁止入库） ----------
+*.onnx
+*.engine
+*.plan
+*.trt
+*.trtcache
+*.cubin
+*.pt
+*.pth
+*.weights
+*.tflite
+*.zip
+*.tar
+*.tar.gz
+
+# 例外：测试用极小夹具允许入库（按需放开，见 SPEC 17.1 固定回归模型）
+!tests/fixtures/**
+
+# ---------- 编译产物（生成的 C++ 工程构建目录） ----------
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.o
+*.obj
+*.a
+*.lib
+*.exe
+*.dll
+*.dylib
+
+# 注意：generated/ 下的 C++ 工程属可复现产物，不入库
+generated/
+
+# ---------- 日志 ----------
+*.log
+logs/
+!docs/**/*.log
+
+# ---------- Celery ----------
+celerybeat-schedule
+celerybeat.pid
+celerybeat-schedule.*
+
+# ---------- IDE / 编辑器 ----------
+.idea/
+*.iml
+*.iws
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.example
+*.swp
+*.swo
+*~
+
+# ---------- 操作系统 ----------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ---------- 其它 ----------
+*.bak
+*.orig
+*.rej
