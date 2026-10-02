@@ -1,0 +1,16 @@
+# 跨平台行尾（真实踩过/必须防的坑）
+#
+# shell 脚本在 Linux/macOS 上必须是 LF：Windows 检出若被转成 CRLF，
+# `#!/usr/bin/env bash` 会带上 \r，执行时报 "bad interpreter"。
+# PowerShell 脚本则相反：必须带 UTF-8 BOM 才能被 Windows PowerShell 5.1 正确读中文
+# （见 AGENTS.md「工程环境注意事项」）。
+*.sh    text eol=lf
+*.bash  text eol=lf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Dockerfile / compose 保持 LF
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+docker-compose.yml text eol=lf

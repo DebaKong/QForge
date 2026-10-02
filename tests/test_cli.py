@@ -295,6 +295,23 @@ def test_powershell_scripts_are_utf8_with_bom() -> None:
         assert raw.startswith(b"\xef\xbb\xbf"), f"{path.name} 含非 ASCII 字符但缺少 UTF-8 BOM"
 
 
+def test_shell_scripts_use_lf_line_endings() -> None:
+    """shell 脚本必须是 LF 行尾并带 shebang。
+
+    实测/常识：Windows 检出若把 .sh 转成 CRLF，`#!/usr/bin/env bash` 会变成 `bash\\r`，
+    Linux/macOS 上直接报 bad interpreter。`.gitattributes` 里已固定 `*.sh text eol=lf`。
+    """
+    shell_scripts = [REPO_ROOT / "QForge.sh", *sorted((REPO_ROOT / "scripts").glob("*.sh"))]
+    assert shell_scripts, "应当存在 shell 脚本"
+    for path in shell_scripts:
+        raw = path.read_bytes()
+        assert raw.startswith(b"#!"), f"{path.name} 缺少 shebang"
+        assert b"\r\n" not in raw, f"{path.name} 含 CRLF 行尾，Linux/macOS 上会执行失败"
+
+    attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.sh" in attributes and "eol=lf" in attributes, ".gitattributes 必须固定 shell 脚本为 LF"
+
+
 # --------------------------------------------------------------------------- #
 # 依赖声明防漂移
 # --------------------------------------------------------------------------- #

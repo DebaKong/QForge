@@ -102,13 +102,14 @@
 | CUDA 驱动加载跨平台 | 完成 | Linux 下加载 `libcuda.so.1`（原先只写 `nvcuda.dll`，容器里必然失败）；Engine 元数据新增 `platform` 字段 |
 | **依赖边界拆分（api / worker 双镜像）** | 完成 | GPU 依赖移入可选额外项 `gpu`；api 镜像 **981 MB**（原合并镜像 9.3 GB），worker 镜像保留 GPU 能力；契约测试防止回退 |
 | 桌面 / 开始菜单快捷方式 | 完成 | `scripts\create-shortcut.ps1`（已实测创建并可 `-Remove` 撤销） |
+| **Linux/macOS 原生安装脚本** | 完成 | `scripts/install.sh` + `QForge.sh`（与 Windows 版等价），并在 `python:3.10-slim` 容器里真实跑通；`.gitattributes` 固定 `.sh` 为 LF 行尾 |
 
 ### 剩余
 
 | 工作项 | 说明 |
 | --- | --- |
-| Linux/macOS 原生安装脚本（`install.sh`） | 容器化已覆盖 Linux 部署；原生脚本仍只有 Windows 版 |
 | 前端构建产物是否随包分发 | 决定「新机器是否完全不需要 Node」——待用户确认 |
+| 应用内一步到位的前端构建 | 目前 `install.ps1/install.sh` 需要在仓库内构建前端；若以后做发行包，可改为下载预构建产物 |
 
 **步骤数：12 → 3**（装 NVIDIA 驱动 → `install.ps1` → `QForge.bat`）；
 需要「编译生成的 C++ 工程」时 +1 步（TensorRT 开发包，需 NVIDIA 账号登录）。

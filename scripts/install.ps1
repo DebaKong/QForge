@@ -34,6 +34,10 @@
 .PARAMETER NoGpu
   不安装 GPU 额外项（TensorRT 运行库 / cuda-python）。只适合「不在本机构建 Engine」的场景。
 
+.PARAMETER PipIndexUrl
+  指定 pip 源；国内网络建议用镜像，例：
+  -PipIndexUrl https://pypi.tuna.tsinghua.edu.cn/simple
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
@@ -48,7 +52,8 @@ param(
     [switch]$SkipCuda,
     [switch]$SkipFrontend,
     [switch]$InstallPython,
-    [switch]$NoGpu
+    [switch]$NoGpu,
+    [string]$PipIndexUrl = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -202,11 +207,15 @@ if ($SkipDeps) {
     # 只要 API/界面（不在本机建 Engine）时才用 -NoGpu。
     $requirement = if ($NoGpu) { "." } else { ".[gpu]" }
     $installArgs = @("-m", "pip", "install")
+    if ($PipIndexUrl) {
+        $installArgs += @("--index-url", $PipIndexUrl)
+        Write-Ok "使用 pip 源：$PipIndexUrl"
+    }
     if ($Editable) { $installArgs += "-e" }
     $installArgs += $requirement
     if ($NoGpu) { Write-Warn2 "按参数要求跳过 GPU 依赖（无法构建 Engine，qforge doctor 会标为缺失）" }
     & $venvPython @installArgs
-    if ($LASTEXITCODE -ne 0) { Fail "pip 安装失败，请检查网络后重试" }
+    if ($LASTEXITCODE -ne 0) { Fail "pip 安装失败，请检查网络后重试（或换源：-PipIndexUrl https://pypi.tuna.tsinghua.edu.cn/simple）" }
     Write-Ok "依赖安装完成"
 }
 

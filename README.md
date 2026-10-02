@@ -77,6 +77,8 @@ QForge/
 
 新机器上只需要三步：
 
+**Windows**：
+
 ```powershell
 # 1) 安装：自动建虚拟环境 → 装依赖 → 下载 CUDA 开发文件（公开源，无需登录）
 #          → 初始化数据目录 → 尽力构建前端界面 → 环境体检
@@ -84,6 +86,13 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
 # 2) 启动：界面 + API + worker 一起起来，并自动打开浏览器
 .\QForge.bat
+```
+
+**Linux / macOS**：
+
+```bash
+bash scripts/install.sh     # 同上，自动找 Python 3.10、建 .venv、装依赖、初始化
+./QForge.sh                 # 启动并打开浏览器
 ```
 
 也可以直接用 `qforge` 命令：`qforge serve --open`。

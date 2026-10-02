@@ -161,12 +161,17 @@ def _check_gpu() -> Check:
                 return Check("GPU", True, STATUS_PASS, output.splitlines()[0])
         except OSError:
             pass
+    hint = (
+        "安装/更新 NVIDIA 显卡驱动：https://www.nvidia.cn/drivers/（Windows）"
+        if os.name == "nt"
+        else "Linux：装发行版驱动或官方 .run 包；在容器里需 --gpus all 与 NVIDIA 容器运行时"
+    )
     return Check(
         "GPU",
         True,
         STATUS_FAIL,
         str(info.get("reason") or "未检测到 NVIDIA GPU"),
-        "安装 NVIDIA 显卡驱动（Windows 用 GeForce Experience 或官网驱动）：https://www.nvidia.cn/drivers/",
+        hint,
     )
 
 
