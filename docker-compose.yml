@@ -36,10 +36,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: api
       args:
         # 可用环境变量覆盖为国内镜像（.env 里设 QFORGE_PIP_INDEX_URL）
         PIP_INDEX_URL: ${QFORGE_PIP_INDEX_URL:-https://pypi.org/simple}
-    image: qforge-app:latest
+    image: qforge-api:latest
     depends_on:
       redis:
         condition: service_healthy
@@ -68,10 +69,11 @@ services:
     restart: unless-stopped
 
   worker:
-    image: qforge-app:latest
+    image: qforge-worker:latest
     build:
       context: .
       dockerfile: Dockerfile
+      target: worker
       args:
         PIP_INDEX_URL: ${QFORGE_PIP_INDEX_URL:-https://pypi.org/simple}
     command: ["qforge", "worker", "--concurrency", "1"]

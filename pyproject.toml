@@ -10,9 +10,10 @@ description = "QForge — ONNX 自动化量化部署平台（SPEC.md V1.0）"
 readme = "README.md"
 # SPEC 4.1：版本矩阵必须固定。项目统一使用 Python 3.10（conda env: qforge）。
 requires-python = ">=3.10,<3.11"
-# 运行期依赖：与 backend/requirements.txt 保持一致（有测试防止漂移）。
-# tensorrt 由 pip 提供运行库，**无需登录 NVIDIA 账号**；仅「编译生成的 C++ 工程」
-# 才需要官方开发包（见 docs/portable.md）。
+# 依赖边界（决定容器镜像有多大）：
+#   dependencies = 核心：Web/队列/校验/预处理/代码生成 —— **不需要 GPU**，api 容器只装这些；
+#   gpu 额外项   = TensorRT 运行库 + cuda-python —— 构建 Engine 与 INT8 校准需要，worker 容器装它。
+# 原生安装由 scripts/install.ps1 自动执行 `pip install ".[gpu]"`（用户不需要记这些）。
 dependencies = [
     # ---- Web / 数据库 / 队列 ----
     "fastapi==0.142.2",
@@ -33,14 +34,15 @@ dependencies = [
     "PyYAML==6.0.3",
     "python-multipart==0.0.32",
     "psutil==7.2.2",
-    # ---- 本地构建链与 GPU ----
+    # ---- 本地构建链（编译生成的 C++ 工程需要；体积小，不单独拆）----
     "cmake==4.4.3",
     "ninja==1.13.2",
-    "cuda-python==13.4.1",
-    "tensorrt==10.16.1.11",
 ]
 
 [project.optional-dependencies]
+# GPU：TensorRT 运行库由 pip 提供，**无需登录 NVIDIA 账号**（Linux 版单包约 3.7 GB，
+# 这也是 api 镜像与 worker 镜像分开的原因）。仅「编译生成的 C++ 工程」才需要官方开发包。
+gpu = ["tensorrt==10.16.1.11", "cuda-python==13.4.1"]
 dev = ["pytest==9.1.1", "httpx==0.28.1"]
 
 [project.scripts]

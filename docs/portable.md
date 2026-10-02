@@ -100,6 +100,8 @@
 | 缺少 Python 时自动安装 | 完成 | 安装器可用 winget 装 Python 3.10（默认先询问，`-InstallPython` 跳过询问） |
 | **Docker 一体化（compose：api + worker + redis）** | 完成 | `docker compose up -d --build` 一条命令；容器内 worker 真实构建 Engine 并推理（实测 9 秒 SUCCESS、MAE 1.85e-5），详见 [docker.md](docker.md) |
 | CUDA 驱动加载跨平台 | 完成 | Linux 下加载 `libcuda.so.1`（原先只写 `nvcuda.dll`，容器里必然失败）；Engine 元数据新增 `platform` 字段 |
+| **依赖边界拆分（api / worker 双镜像）** | 完成 | GPU 依赖移入可选额外项 `gpu`；api 镜像 **981 MB**（原合并镜像 9.3 GB），worker 镜像保留 GPU 能力；契约测试防止回退 |
+| 桌面 / 开始菜单快捷方式 | 完成 | `scripts\create-shortcut.ps1`（已实测创建并可 `-Remove` 撤销） |
 
 ### 剩余
 
@@ -107,7 +109,6 @@
 | --- | --- |
 | Linux/macOS 原生安装脚本（`install.sh`） | 容器化已覆盖 Linux 部署；原生脚本仍只有 Windows 版 |
 | 前端构建产物是否随包分发 | 决定「新机器是否完全不需要 Node」——待用户确认 |
-| 容器镜像瘦身 | 当前 9.3 GB（Linux TensorRT 运行库 3.7 GB）；只要 api 的场景可做无 tensorrt 的精简镜像 |
 
 **步骤数：12 → 3**（装 NVIDIA 驱动 → `install.ps1` → `QForge.bat`）；
 需要「编译生成的 C++ 工程」时 +1 步（TensorRT 开发包，需 NVIDIA 账号登录）。

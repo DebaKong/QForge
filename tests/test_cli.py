@@ -245,6 +245,38 @@ def test_build_frontend_without_source_reports_how(monkeypatch, tmp_path: Path, 
 
 
 # --------------------------------------------------------------------------- #
+# 打包与依赖边界（决定容器镜像多大）
+# --------------------------------------------------------------------------- #
+def test_pyproject_declares_gpu_extra() -> None:
+    """GPU 依赖必须待在可选额外项 `gpu` 里，而不是核心 dependencies。
+
+    否则 api 镜像会被迫装上约 3.7 GB 的 TensorRT 运行库（实测镜像从 0.98 GB 涨到 9.3 GB）。
+    """
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    core = re.search(r"^dependencies = \[(.*?)^\]", pyproject, re.S | re.M)
+    extras = re.search(r"^\[project\.optional-dependencies\](.*?)^\[", pyproject, re.S | re.M)
+    assert core is not None and extras is not None
+
+    for package in ("tensorrt", "cuda-python"):
+        assert f'"{package}==' not in core.group(1), f"{package} 不应出现在核心 dependencies 里"
+        assert f'"{package}==' in extras.group(1), f"{package} 应声明在 gpu 额外项里"
+
+
+def test_dockerfile_keeps_api_image_free_of_gpu_dependencies() -> None:
+    """Dockerfile 的两个目标必须保持依赖边界：api 不装 gpu 额外项，worker 才装。"""
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "FROM core AS api" in dockerfile
+    assert "FROM core AS worker" in dockerfile
+
+    api_block = dockerfile.split("FROM core AS api", 1)[1].split("FROM core AS worker", 1)[0]
+    worker_block = dockerfile.split("FROM core AS worker", 1)[1]
+
+    assert "pip install ." in api_block
+    assert "[gpu]" not in api_block, "api 目标不应安装 GPU 额外项"
+    assert 'pip install ".[gpu]"' in worker_block, "worker 目标必须装 GPU 额外项"
+
+
+# --------------------------------------------------------------------------- #
 # 脚本编码（真实踩过的坑）
 # --------------------------------------------------------------------------- #
 def test_powershell_scripts_are_utf8_with_bom() -> None:
@@ -267,18 +299,24 @@ def test_powershell_scripts_are_utf8_with_bom() -> None:
 # 依赖声明防漂移
 # --------------------------------------------------------------------------- #
 def test_dependency_pins_match_requirements() -> None:
-    """pyproject 的运行期依赖必须与 backend/requirements.txt 的 pin 一致。
+    """pyproject 的运行期依赖（含可选额外项）必须与 backend/requirements.txt 的 pin 一致。
 
     两处声明是「安装即用」（pyproject）与「开发环境锁定」（requirements）的分工，
     一旦漂移就会出现「安装出来的版本 ≠ 测试过的版本」，必须挡住。
+    注意：GPU 依赖在 pyproject 里属于可选额外项 `gpu`，因此比较时要把额外项也算进来。
     """
     pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    block = re.search(r"^dependencies = \[(.*?)^\]", pyproject, re.S | re.M)
-    assert block is not None, "pyproject.toml 未声明 dependencies"
+
+    blocks = [
+        re.search(r"^dependencies = \[(.*?)^\]", pyproject, re.S | re.M),
+        re.search(r"^\[project\.optional-dependencies\](.*?)^\[", pyproject, re.S | re.M),
+    ]
+    assert all(block is not None for block in blocks), "pyproject.toml 未声明 dependencies/额外项"
 
     pins: dict[str, str] = {}
-    for match in re.finditer(r'"([A-Za-z0-9_.\-]+)(?:\[[^\]]+\])?==([^"]+)"', block.group(1)):
-        pins[match.group(1).lower()] = match.group(2)
+    for block in blocks:
+        for match in re.finditer(r'"([A-Za-z0-9_.\-]+)(?:\[[^\]]+\])?==([^"]+)"', block.group(1)):
+            pins[match.group(1).lower()] = match.group(2)
 
     requirements: dict[str, str] = {}
     for raw in (REPO_ROOT / "backend" / "requirements.txt").read_text(encoding="utf-8").splitlines():

@@ -31,6 +31,9 @@
 .PARAMETER InstallPython
   未找到 Python 3.10 时直接用 winget 安装（不加此参数会先询问一次）。
 
+.PARAMETER NoGpu
+  不安装 GPU 额外项（TensorRT 运行库 / cuda-python）。只适合「不在本机构建 Engine」的场景。
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
@@ -44,7 +47,8 @@ param(
     [switch]$SkipDeps,
     [switch]$SkipCuda,
     [switch]$SkipFrontend,
-    [switch]$InstallPython
+    [switch]$InstallPython,
+    [switch]$NoGpu
 )
 
 $ErrorActionPreference = "Stop"
@@ -194,10 +198,13 @@ if ($SkipDeps) {
     Write-Warn2 "按参数要求跳过依赖安装"
 } else {
     & $venvPython -m pip install --upgrade pip --quiet
-    $target = if ($Editable) { "-e" } else { "." }
+    # 默认装 GPU 额外项（TensorRT 运行库 + cuda-python）：不装的话无法构建 Engine。
+    # 只要 API/界面（不在本机建 Engine）时才用 -NoGpu。
+    $requirement = if ($NoGpu) { "." } else { ".[gpu]" }
     $installArgs = @("-m", "pip", "install")
     if ($Editable) { $installArgs += "-e" }
-    $installArgs += "."
+    $installArgs += $requirement
+    if ($NoGpu) { Write-Warn2 "按参数要求跳过 GPU 依赖（无法构建 Engine，qforge doctor 会标为缺失）" }
     & $venvPython @installArgs
     if ($LASTEXITCODE -ne 0) { Fail "pip 安装失败，请检查网络后重试" }
     Write-Ok "依赖安装完成"
@@ -264,6 +271,9 @@ Write-Host ""
 Write-Host "安装完成。启动方式：" -ForegroundColor Green
 Write-Host "    .\QForge.bat                  （双击同目录的 QForge.bat 也可以）"
 Write-Host "    $qforge serve --open"
+Write-Host ""
+Write-Host "想要桌面/开始菜单图标：" -ForegroundColor Green
+Write-Host "    powershell -ExecutionPolicy Bypass -File scripts\create-shortcut.ps1"
 Write-Host ""
 Write-Host "提示：本机没有 Redis 也能用（自动使用进程内执行器）；"
 Write-Host "      需要多任务并行/独立 worker 时执行 docker compose up -d redis 即可自动切换。"

@@ -109,6 +109,23 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 | `qforge worker` | 单独启动 Celery worker |
 | `qforge version` | 版本与关键路径 |
 
+想让它像普通软件一样有图标：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\create-shortcut.ps1
+# 桌面 + 开始菜单各创建一个 QForge 快捷方式；撤销用 -Remove
+```
+
+### 依赖边界（决定装多大）
+
+| 组 | 内容 | 谁需要 |
+| --- | --- | --- |
+| 核心（`pip install .`） | Web/队列/校验/预处理/代码生成 | **所有人**（约 300 MB，不需要 GPU） |
+| GPU 额外项（`pip install ".[gpu]"`） | TensorRT 运行库 + cuda-python | **在本机构建 Engine 的人**（本机默认装它，约 1.5 GB） |
+| 开发额外项（`pip install ".[dev]"`） | pytest / httpx | 跑测试的人 |
+
+`scripts\install.ps1` 默认执行 `.[gpu]`（即完整安装）；只想跑 API/界面时用 `-NoGpu`。
+
 ### 可选能力（缺了也能跑核心流程）
 
 | 能力 | 额外需要 | 缺了会怎样 |
@@ -124,6 +141,7 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 conda create -y -n qforge python=3.10 pip
 conda activate qforge
 pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+pip install ".[gpu]"          # 构建 Engine 需要（GPU 额外项）
 alembic -c backend/alembic.ini upgrade head
 ```
 

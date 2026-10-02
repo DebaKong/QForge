@@ -12,11 +12,23 @@ docker compose up -d --build
 
 三个服务：
 
-| 服务 | 作用 | 备注 |
+| 服务 | 镜像 | 作用 | 备注 |
+| --- | --- | --- | --- |
+| `redis` | `redis:7.4-alpine` | 任务队列 | 已实测（Redis 7.4.11） |
+| `api` | `qforge-api`（**981 MB**） | Web API + 前端界面 | 只装核心依赖，**不需要 GPU**；前端在镜像内构建，运行期不需要 Node |
+| `worker` | `qforge-worker`（约 9 GB） | 量化 / Engine 构建 / 代码生成 / 编译 / 运行验证 | 额外装 GPU 依赖（TensorRT 运行库，Linux 版单包约 3.7 GB）；需要 NVIDIA 显卡 |
+
+### 为什么是两个镜像
+
+依赖边界写在 `pyproject.toml` 里：
+
+| 组 | 内容 | 谁用 |
 | --- | --- | --- |
-| `redis` | 任务队列 | 已实测（Redis 7.4.11） |
-| `api` | Web API + 前端界面 | 前端在镜像内构建，**运行期不需要 Node** |
-| `worker` | 量化 / Engine 构建 / 代码生成 / 编译 / 运行验证 | 需要 NVIDIA 显卡 |
+| 核心 `dependencies` | Web/队列/校验/预处理/代码生成/构建链 | **api 与 worker 都用** |
+| 额外项 `gpu` | `tensorrt` + `cuda-python` | **只有 worker 用**（构建 Engine 需要） |
+
+API 只是接收请求、入库、派发任务，不碰 TensorRT —— 所以 api 镜像 0.98 GB，而不是 9 GB。
+只跑 API（例如放在没有显卡的机器上做前端/接口）时这样最省资源。
 
 只想让**本机原生安装**的应用连上 Redis：
 
@@ -80,18 +92,20 @@ docker compose exec api qforge version
 
 | 项 | 结果 |
 | --- | --- |
-| 镜像构建 | 成功：`qforge-app:latest` **9.3 GB**，约 22 分钟（其中 Linux 版 TensorRT 运行库单包 3.7 GB） |
+| 镜像构建 | 两个目标都成功：`qforge-api` **981 MB**（约 2.5 分钟）、`qforge-worker` 约 **9 GB**（约 22 分钟，其中 Linux 版 TensorRT 运行库单包 3.7 GB） |
 | 启动 | `docker compose up -d` → `api`（healthy）/ `worker` / `redis` 三个容器 |
-| 容器内 API | `GET /api/health` → 数据目录 `/data/storage`；`GET /` 200；`GET /api/docs` 200 |
+| **精简 api 镜像可用性** | 用 api 镜像单独起容器：`GET /api/health` ok、`GET /` 200、`GET /api/docs` 200；容器内 `qforge doctor` **如实报告** GPU/TensorRT/cuda-python 为「缺失（必需）」——这正是该镜像的定位（不构建 Engine） |
+| 容器内 API | 数据目录 `/data/storage`；前端由镜像内 `/opt/qforge/web` 托管 |
 | 容器内 worker 看见 GPU | `docker compose exec worker qforge doctor` → RTX 5060 / 驱动 610.88 / CUDA 13.3 / sm_120 / 8.0 GB |
 | **容器内构建 Engine（真实任务）** | `python tools/docker_stack_check.py` → 入队 **0.16s** 返回；`worker_id=celery@<容器主机名>`；**9 秒 SUCCESS**；Engine 241 KB（TensorRT 10.16.1.11，构建于 Linux 容器）；精度 MAE **1.85e-5**、余弦 **0.99999996** |
 | C++ 编译验证 | `BLOCKED`（镜像内没有 TensorRT/CUDA 开发文件，符合预期，不影响其它阶段） |
 | 生成的容器镜像（任务的产物） | `SKIPPED`（`QFORGE_DOCKER_ENABLED=false`，需要时在任务配置里打开） |
 
-两个已知限制：
+已知限制：
 
-1. 镜像 9.3 GB —— Linux 版 TensorRT 运行库本身就 3.7 GB。若只需要 `api`，
-   可以自行做一个不含 `tensorrt` 的精简镜像（把 `tensorrt` 从依赖里去掉即可，
-   但那样该镜像就不能构建 Engine）。
+1. `worker` 镜像约 9 GB —— Linux 版 TensorRT 运行库本身就 3.7 GB，属于硬成本；
+   不需要在本机构建 Engine 时只跑 `api` 即可（981 MB）。
 2. `qforge doctor` 的「前端界面」一项在容器里曾误报「未构建」（它没读 `QFORGE_FRONTEND_DIR`），
    已在源码修复并加断言；**镜像需重新构建才会包含该修复**——界面本身一直由 API 正常托管，不受影响。
+3. 首次构建会从 PyPI 拉取 3.7 GB 的 TensorRT 包；国内网络建议在 `.env` 里设
+   `QFORGE_PIP_INDEX_URL`（见上文）。
