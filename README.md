@@ -7,6 +7,7 @@ C++ 推理工程生成、自动编译与运行验证。
 - 协作方式与阶段纪律：[AGENTS.md](AGENTS.md)
 - **当前实现阶段：阶段 1（MVP：2D 检测 + TensorRT）** —— 交付与验证证据见 [docs/phase-1.md](docs/phase-1.md)
 - 阶段 0 记录：[docs/phase-0.md](docs/phase-0.md)
+- **接入 Redis + Celery**：[docs/redis.md](docs/redis.md)（已实测切换：入队 0.30s 返回，任务由 worker 进程执行）
 - 版本矩阵（已锁定 / 待确认）：[docs/versions.md](docs/versions.md)
 
 ## 阶段状态
