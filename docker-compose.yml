@@ -1,22 +1,19 @@
-# QForge 阶段 0 基础设施编排：Redis + PostgreSQL
+# QForge 容器编排（可选部署方式）
 #
-# 状态说明（诚实标注）：
-#   - 本文件已编写，但【未经运行验证】。本机 Docker daemon 未运行，且
-#     registry-1.docker.io:443 不可达，无法拉取镜像。
-#   - 阶段 0 的运行期验证使用 SQLite + Celery eager（见 docs/phase-0.md）；
-#     Redis 与 PostgreSQL 的真实链路在环境就绪后接入并验证。
+# 两种用法：
+#   1) 只要 Redis（本机原生安装的应用连它）：
+#        docker compose up -d redis
+#   2) 完整容器化（api + worker + redis）：
+#        docker compose up -d --build
+#      然后打开 http://127.0.0.1:8000
 #
-# 启动前提（需人工确认）：
-#   1. 启动 Docker Desktop；
-#   2. 确认镜像仓库可达（必要时配置镜像加速）；
-#   3. 确认下列镜像 tag 后再首次运行（SPEC 4.1：版本必须明确，不得含糊）：
-#        redis:7.4-alpine / postgres:16-alpine
+# 已验证 / 未验证（诚实标注）：
+#   - redis 服务：本机已实测（Redis 7.4.11，PING 正常）
+#   - api / worker：见 docs/docker.md 的验证记录
+#   - postgres 服务：属于阶段 1 之后的候选，未接入应用，用 profile 隔离（默认不启动）
 #
-# 启动后切换后端配置：
-#   QFORGE_DATABASE_URL=postgresql+psycopg://qforge:qforge@127.0.0.1:5432/qforge
-#   QFORGE_CELERY_TASK_ALWAYS_EAGER=false
-#   QFORGE_CELERY_BROKER_URL=redis://127.0.0.1:6379/0
-#   QFORGE_CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/1
+# GPU：worker 需要显卡来构建 Engine，已声明 NVIDIA 设备预留；
+#      若本机 Docker 未启用 GPU 支持，可先只跑 api，或改用原生安装（README「快速开始」）。
 
 name: qforge
 
@@ -35,8 +32,76 @@ services:
       retries: 5
     restart: unless-stopped
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # 可用环境变量覆盖为国内镜像（.env 里设 QFORGE_PIP_INDEX_URL）
+        PIP_INDEX_URL: ${QFORGE_PIP_INDEX_URL:-https://pypi.org/simple}
+    image: qforge-app:latest
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      QFORGE_ENVIRONMENT: prod
+      QFORGE_DATA_DIR: /data/storage
+      QFORGE_FRONTEND_DIR: /opt/qforge/web
+      QFORGE_EXECUTOR_MODE: celery
+      QFORGE_CELERY_TASK_ALWAYS_EAGER: "false"
+      QFORGE_CELERY_BROKER_URL: redis://redis:6379/0
+      QFORGE_CELERY_RESULT_BACKEND: redis://redis:6379/1
+    ports:
+      - "8000:8000"
+    volumes:
+      - qforge-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).status == 200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    image: qforge-app:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${QFORGE_PIP_INDEX_URL:-https://pypi.org/simple}
+    command: ["qforge", "worker", "--concurrency", "1"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      QFORGE_ENVIRONMENT: prod
+      QFORGE_DATA_DIR: /data/storage
+      QFORGE_FRONTEND_DIR: /opt/qforge/web
+      QFORGE_EXECUTOR_MODE: celery
+      QFORGE_CELERY_TASK_ALWAYS_EAGER: "false"
+      QFORGE_CELERY_BROKER_URL: redis://redis:6379/0
+      QFORGE_CELERY_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - qforge-data:/data
+    # 构建 Engine 需要显卡；没有 NVIDIA 运行时的机器可注释掉这段，只跑 api
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # 未接入应用，默认不启动：docker compose --profile postgres up -d postgres
   postgres:
     image: postgres:16-alpine
+    profiles: ["postgres"]
     environment:
       POSTGRES_USER: qforge
       POSTGRES_PASSWORD: qforge
@@ -55,3 +120,4 @@ services:
 volumes:
   redis-data:
   postgres-data:
+  qforge-data:

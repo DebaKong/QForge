@@ -126,6 +126,31 @@ def test_app_root_is_never_404(client: TestClient) -> None:
     assert client.get("/api/openapi.json").status_code == 200
 
 
+def test_doctor_frontend_check_honours_setting(monkeypatch, tmp_path: Path, capsys) -> None:
+    """doctor 必须读 QFORGE_FRONTEND_DIR。
+
+    容器镜像里前端在 /opt/qforge/web（镜像内路径），若只按「数据目录旁的 web/」猜，
+    就会误报「未构建」——实测在容器里就是这样误报过一次。
+    """
+    from app.config.settings import get_settings
+
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "index.html").write_text("<html>ok</html>", encoding="utf-8")
+
+    monkeypatch.setenv("QFORGE_FRONTEND_DIR", str(web))
+    get_settings.cache_clear()
+    try:
+        main(["doctor", "--json"])
+        payload = json.loads(capsys.readouterr().out)
+    finally:
+        get_settings.cache_clear()
+
+    frontend = next(item for item in payload["checks"] if item["name"] == "前端界面")
+    assert frontend["status"] == "通过", frontend
+    assert str(web) in frontend["detail"]
+
+
 # --------------------------------------------------------------------------- #
 # CUDA 开发文件自动获取（公开源）
 # --------------------------------------------------------------------------- #

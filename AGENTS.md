@@ -35,3 +35,7 @@
   `tests/test_cli.py::test_powershell_scripts_are_utf8_with_bom` 是这条的守卫用例。
 - **本机默认 shell 是 Windows PowerShell 5.1**：没有三元运算符 `? :`、没有 `??`、`-Encoding UTF8`
   写出的是带 BOM 的 UTF-8。
+- **`git add` 遇到不存在的路径会整体中止**：例如 `git add old_dir new_file` 中 `old_dir` 已被 `git mv`
+  移走时，git 报 `pathspec ... did not match` 并**放弃整次 add**，只留下此前已暂存的重命名。
+  提交前务必核对 `git show --stat <commit>`（或 `git diff --cached --name-status`），
+  确认内容真的进了提交——只看“commit 成功”会漏掉整批改动。

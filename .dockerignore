@@ -1,0 +1,51 @@
+# Docker 构建上下文排除清单
+#
+# 目的：镜像里只需要「安装应用」所需的最小内容，其余全部排除。
+# 特别重要：本机 .venv 约 2.6 GB、frontend/node_modules 约 116 MB，
+# 不排除会让构建上下文巨大且极慢（Docker 需要先把上下文发给 daemon）。
+
+# ---- 版本控制与 IDE ----
+.git
+.gitignore
+.gitattributes
+.vscode/
+.idea/
+*.swp
+
+# ---- Python 虚拟环境与缓存 ----
+.venv/
+venv/
+env/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# ---- 运行时数据（任务产物、数据库、下载的工具链）----
+storage/
+toolchain/
+data/
+artifacts/
+uploads/
+*.db
+*.db-wal
+*.db-shm
+
+# ---- 前端依赖与构建产物（镜像内会重新构建）----
+frontend/node_modules/
+frontend/dist/
+
+# ---- 与本镜像无关的内容 ----
+tests/
+docs/
+tools/
+scripts/
+*.log
+*.md
+!README.md

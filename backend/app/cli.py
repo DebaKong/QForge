@@ -302,7 +302,8 @@ def _check_docker() -> Check:
 
 
 def _check_frontend() -> Check:
-    built = frontend_dir()
+    # 必须走 settings：容器镜像用 QFORGE_FRONTEND_DIR 指向镜像内的 /opt/qforge/web
+    built = get_settings().resolved_frontend_dir
     node = shutil.which("node") or shutil.which("npm")
     if built is not None:
         return Check("前端界面", False, STATUS_PASS, str(built))

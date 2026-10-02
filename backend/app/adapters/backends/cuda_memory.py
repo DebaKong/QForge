@@ -109,12 +109,29 @@ class DeviceBuffer:
             self.pointer = 0
 
 
+def cuda_driver_library_name() -> str:
+    """CUDA 驱动库名（跨平台）。
+
+    Windows 用 `nvcuda.dll`；Linux 用 `libcuda.so.1`（由 NVIDIA 驱动/容器运行时提供）。
+    容器里构建 Engine 就依赖这里的平台判断（Linux 容器 + `--gpus all`）。
+    """
+    return "nvcuda.dll" if os.name == "nt" else "libcuda.so.1"
+
+
+def load_cuda_driver() -> Any:
+    """加载 CUDA 驱动库；失败抛 OSError 由调用方给出可读提示。"""
+    return ctypes.CDLL(cuda_driver_library_name())
+
+
 def cuda_driver_info() -> dict[str, Any]:
     """查询驱动与设备信息（SPEC 4.1：Engine 必须记录 GPU 架构与版本）。"""
     try:
-        cuda = ctypes.WinDLL("nvcuda.dll")
-    except OSError as exc:  # pragma: no cover - 非 Windows 或无驱动
-        return {"available": False, "reason": f"无法加载 nvcuda.dll: {exc}"}
+        cuda = load_cuda_driver()
+    except OSError as exc:  # pragma: no cover - 无驱动/无 GPU 环境
+        return {
+            "available": False,
+            "reason": f"无法加载 {cuda_driver_library_name()}: {exc}",
+        }
 
     def _call(name: str, *args: Any) -> int:
         return int(cuda[name](*args))

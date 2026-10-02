@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import time
 import warnings
 from dataclasses import dataclass
@@ -442,6 +443,10 @@ class TensorRTAdapter(BackendAdapter):
             metadata = {
                 "backend": self.name,
                 "backend_version": trt.__version__,
+                # TensorRT 计划文件是**平台相关**的（Windows 构建的 Engine 不能拿到 Linux 上加载），
+                # 因此把构建平台记进元数据，便于日后排查「Engine 不兼容」类问题。
+                "platform": platform.system().lower(),
+                "python_version": platform.python_version(),
                 "cuda_version": env_info.get("driver_version"),
                 "cuda_driver_version": env_info.get("driver_version"),
                 "gpu_name": env_info.get("device_name"),

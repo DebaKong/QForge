@@ -96,15 +96,19 @@
 | `scripts/install.ps1` 一键安装 | 完成 | 找 Python → 建 venv → 装依赖 → CUDA → 初始化 →（有 Node 就）构建前端 → 体检 |
 | `QForge.bat` 双击启动 | 完成 | 优先用 `.venv`，否则用 PATH 上的 `qforge`；未安装时给出安装命令 |
 | README 改为「两条命令」 | 完成 | 快速开始、可选能力表、环境要求均已重写 |
+| **数据库迁移随包分发** | 完成 | 迁移脚本移入 `app/migrations`；`qforge init` 与 API 启动都会应用迁移。三种情况都实测：全新库→应用迁移、老库(create_all)→登记版本不报错、已最新→无动作 |
+| 缺少 Python 时自动安装 | 完成 | 安装器可用 winget 装 Python 3.10（默认先询问，`-InstallPython` 跳过询问） |
+| **Docker 一体化（compose：api + worker + redis）** | 完成 | `docker compose up -d --build` 一条命令；容器内 worker 真实构建 Engine 并推理（实测 9 秒 SUCCESS、MAE 1.85e-5），详见 [docker.md](docker.md) |
+| CUDA 驱动加载跨平台 | 完成 | Linux 下加载 `libcuda.so.1`（原先只写 `nvcuda.dll`，容器里必然失败）；Engine 元数据新增 `platform` 字段 |
 
 ### 剩余
 
 | 工作项 | 说明 |
 | --- | --- |
-| Linux/macOS 安装脚本（`install.sh`） | 应用代码本身跨平台；但 GPU 探测与编译链目前按 Windows 验证 |
-| 把 Alembic 迁移打包进 CLI | 安装形态目前靠 `create_all` 建表，跨版本升级表结构仍需开发路径 |
+| Linux/macOS 原生安装脚本（`install.sh`） | 容器化已覆盖 Linux 部署；原生脚本仍只有 Windows 版 |
 | 前端构建产物是否随包分发 | 决定「新机器是否完全不需要 Node」——待用户确认 |
-| 干净机器全流程验证 | 已在全新 venv 中执行 `install.ps1` 验证（结果见提交记录） |
+| 容器镜像瘦身 | 当前 9.3 GB（Linux TensorRT 运行库 3.7 GB）；只要 api 的场景可做无 tensorrt 的精简镜像 |
 
 **步骤数：12 → 3**（装 NVIDIA 驱动 → `install.ps1` → `QForge.bat`）；
 需要「编译生成的 C++ 工程」时 +1 步（TensorRT 开发包，需 NVIDIA 账号登录）。
+升级到新版本后执行一次 `qforge init` 即可应用新的数据库迁移（API 启动时也会自动检查）。

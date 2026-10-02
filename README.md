@@ -8,6 +8,8 @@ C++ 推理工程生成、自动编译与运行验证。
 - **当前实现阶段：阶段 1（MVP：2D 检测 + TensorRT）** —— 交付与验证证据见 [docs/phase-1.md](docs/phase-1.md)
 - 阶段 0 记录：[docs/phase-0.md](docs/phase-0.md)
 - **接入 Redis + Celery**：[docs/redis.md](docs/redis.md)（已实测切换：入队 0.30s 返回，任务由 worker 进程执行）
+- **容器化部署（可选）**：[docs/docker.md](docs/docker.md)（`docker compose up -d --build` 一条命令跑起 api + worker + redis）
+- 安装即用改造的方案与进度：[docs/portable.md](docs/portable.md)
 - 版本矩阵（已锁定 / 待确认）：[docs/versions.md](docs/versions.md)
 
 ## 阶段状态
@@ -101,8 +103,8 @@ powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 | --- | --- |
 | `qforge doctor` | 环境体检：逐项给出「有什么/缺什么/怎么补」 |
 | `qforge serve --open` | 启动服务（自动选择执行方式、自动带起 worker、自动开浏览器） |
-| `qforge init` | 建数据目录与数据库表（首次 `serve` 也会自动完成） |
-| `qforge build-frontend` | 构建前端界面（需要 Node.js） |
+| `qforge init` | 建数据目录并**应用数据库迁移**（首次 `serve` 也会自动完成；升级版本后再跑一次即可升级表结构） |
+| `qforge build-frontend` | 构建前端界面（需要 Node.js；安装形态用 `--source <目录> --publish`） |
 | `qforge fetch-cuda-headers` | 自动下载 CUDA 运行时开发文件（无需登录；`--dry-run` 只看不下载） |
 | `qforge worker` | 单独启动 Celery worker |
 | `qforge version` | 版本与关键路径 |
