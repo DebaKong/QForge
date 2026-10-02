@@ -28,6 +28,9 @@
 .PARAMETER SkipFrontend
   不构建前端界面（API 仍可用，界面显示内置说明页）。
 
+.PARAMETER InstallPython
+  未找到 Python 3.10 时直接用 winget 安装（不加此参数会先询问一次）。
+
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 
@@ -40,7 +43,8 @@ param(
     [switch]$Editable,
     [switch]$SkipDeps,
     [switch]$SkipCuda,
-    [switch]$SkipFrontend
+    [switch]$SkipFrontend,
+    [switch]$InstallPython
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,38 +76,100 @@ Write-Host "仓库位置：$repo"
 # --------------------------------------------------------------------------- #
 Write-Step "1/7 查找 Python 3.10"
 $pythonExe = ""
-$candidates = @()
-if ($Python) { $candidates += @{ Exe = $Python; Args = @() } }
-$candidates += @(
-    @{ Exe = "py"; Args = @("-3.10") },
-    @{ Exe = "python"; Args = @() },
-    @{ Exe = "python3"; Args = @() }
-)
+$pythonArgs = @()
 
-foreach ($candidate in $candidates) {
-    $exe = $candidate.Exe
-    if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { continue }
+function Find-Python310 {
+    $found = @()
+    $found += ,@{ Exe = "py"; Args = @("-3.10") }
+    $found += ,@{ Exe = "python"; Args = @() }
+    $found += ,@{ Exe = "python3"; Args = @() }
+    # winget 安装后可能还没进当前进程的 PATH，直接看常见安装位置
+    $known = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python310\python.exe"),
+        "C:\Program Files\Python310\python.exe",
+        "C:\Python310\python.exe"
+    )
+    foreach ($path in $known) { if (Test-Path $path) { $found += ,@{ Exe = $path; Args = @() } } }
+    return $found
+}
+
+function Test-Python310([string]$exe, [array]$exeArgs, [ref]$version) {
     try {
-        $probe = & $exe @($candidate.Args) -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
-    } catch { continue }
-    if (-not $probe) { continue }
+        $probe = & $exe @($exeArgs) -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
+    } catch { return $false }
+    if (-not $probe) { return $false }
+    $version.Value = $probe.Trim()
     $parts = $probe.Trim().Split(".")
-    if ([int]$parts[0] -eq 3 -and [int]$parts[1] -eq 10) {
-        $pythonExe = $exe
-        $pythonArgs = $candidate.Args
-        Write-Ok "使用 $exe（Python $probe）"
-        break
+    return ([int]$parts[0] -eq 3 -and [int]$parts[1] -eq 10)
+}
+
+if ($Python) {
+    $probe = ""
+    if (Test-Python310 $Python @() ([ref]$probe)) {
+        $pythonExe = $Python
+        Write-Ok "使用指定解释器 $Python（Python $probe）"
+    } else {
+        Write-Warn2 "指定解释器不可用或不是 3.10：$Python"
     }
-    Write-Warn2 "$exe 是 Python $probe（需要 3.10.x，跳过）"
 }
 
 if (-not $pythonExe) {
-    Write-Host ""
-    Write-Host "未找到 Python 3.10。请任选一种方式安装后重新运行本脚本：" -ForegroundColor Yellow
-    Write-Host "  winget install -e --id Python.Python.3.10"
-    Write-Host "  或从 https://www.python.org/downloads/release/python-31011/ 下载安装"
-    Write-Host "（安装时勾选 Add Python to PATH；本项目锁定 3.10，其它版本未验证）"
-    exit 1
+    foreach ($candidate in (Find-Python310)) {
+        $exe = $candidate.Exe
+        if ($exe -eq "py" -or $exe -eq "python" -or $exe -eq "python3") {
+            if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { continue }
+        } elseif (-not (Test-Path $exe)) { continue }
+
+        $probe = ""
+        if (Test-Python310 $exe $candidate.Args ([ref]$probe)) {
+            $pythonExe = $exe
+            $pythonArgs = $candidate.Args
+            Write-Ok "使用 $exe（Python $probe）"
+            break
+        }
+        if ($probe) { Write-Warn2 "$exe 是 Python $probe（需要 3.10.x，跳过）" }
+    }
+}
+
+if (-not $pythonExe) {
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    $doInstall = $false
+    if ($winget) {
+        Write-Host "    未找到 Python 3.10，可以用 winget 自动安装。" -ForegroundColor Yellow
+        if ($InstallPython) {
+            $doInstall = $true
+        } else {
+            $answer = ""
+            try { $answer = Read-Host "    现在自动安装 Python 3.10 吗？[Y/n]" } catch { $answer = "n" }
+            if ($answer -eq "" -or $answer -match "^[Yy]") { $doInstall = $true }
+        }
+    }
+
+    if ($doInstall) {
+        Write-Host "    执行：winget install -e --id Python.Python.3.10" -ForegroundColor Cyan
+        & winget install -e --id Python.Python.3.10 --accept-source-agreements --accept-package-agreements
+        if ($LASTEXITCODE -ne 0) { Write-Warn2 "winget 返回非零退出码 $LASTEXITCODE，继续尝试探测" }
+        foreach ($candidate in (Find-Python310)) {
+            $exe = $candidate.Exe
+            if ($exe -in @("py", "python", "python3")) { continue }  # 新装的还没进 PATH，只看已知路径
+            $probe = ""
+            if (Test-Python310 $exe $candidate.Args ([ref]$probe)) {
+                $pythonExe = $exe
+                $pythonArgs = $candidate.Args
+                Write-Ok "已安装并使用 $exe（Python $probe）"
+                break
+            }
+        }
+    }
+
+    if (-not $pythonExe) {
+        Write-Host ""
+        Write-Host "未找到 Python 3.10。请任选一种方式安装后重新运行本脚本：" -ForegroundColor Yellow
+        Write-Host "  winget install -e --id Python.Python.3.10"
+        Write-Host "  或从 https://www.python.org/downloads/release/python-31011/ 下载安装"
+        Write-Host "（安装时勾选 Add Python to PATH；本项目锁定 3.10，其它版本未验证）"
+        exit 1
+    }
 }
 
 # --------------------------------------------------------------------------- #
