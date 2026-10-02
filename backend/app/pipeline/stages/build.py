@@ -261,10 +261,16 @@ def _run_executable(
     command = [str(executable), *arguments]
     logger.info("运行验证：%s", " ".join(command))
 
+    # 默认不把 TensorRT/CUDA 的 DLL 复制进每个任务的 build 目录（其中
+    # nvinfer_builder_resource_*.dll 约 1.9 GB 且运行期无用）；改为运行时把
+    # 这些 bin 目录加入 PATH，程序同样能找到依赖。
+    run_env = toolchain.build_environment()
+
     try:
         completed = subprocess.run(
             command,
             cwd=str(executable.parent),
+            env=run_env,
             capture_output=True,
             text=True,
             encoding="utf-8",

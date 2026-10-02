@@ -117,6 +117,15 @@ def _find_executable(name: str, override: str | None = None) -> str | None:
     return None
 
 
+def build_environment(info: ToolchainInfo | None = None) -> dict[str, str]:
+    """返回带 CMake/Ninja 与 GPU 运行库目录的子进程环境变量。
+
+    编译与「运行生成的程序」共用它：这样运行期可以直接从 TensorRT/CUDA 的 bin 目录
+    加载 DLL，**不需要把 DLL 复制进每个任务目录**（那会白占 2 GB 以上）。
+    """
+    return _child_env(info or detect_toolchain())
+
+
 def detect_toolchain() -> ToolchainInfo:
     """探测 CMake / Ninja / MSVC 环境。"""
     settings = get_settings()

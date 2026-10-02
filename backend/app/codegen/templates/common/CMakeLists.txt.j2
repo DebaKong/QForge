@@ -113,14 +113,35 @@ else()
   target_compile_options(qforge_detector PRIVATE -Wall -Wextra -O2)
 endif()
 
-# Windows：把运行期依赖的 DLL 复制到产物目录（Linux 容器内由基础镜像提供）
-foreach(dll_dir IN LISTS QFORGE_RUNTIME_DLL_DIRS)
-  if(EXISTS "${dll_dir}")
-    file(GLOB QFORGE_DLLS "${dll_dir}/*.dll")
-    if(QFORGE_DLLS)
-      add_custom_command(TARGET qforge_detector POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${QFORGE_DLLS} $<TARGET_FILE_DIR:qforge_detector>
-        COMMENT "复制运行期 DLL 到产物目录")
-    endif()
+# 运行期 DLL（仅 Windows，且仅在显式要求时复制）
+#
+# 为什么默认**不复制**：
+#   1. TensorRT 包里的 nvinfer_builder_resource_*.dll 共约 1.9 GB，只有「构建 Engine」时
+#      才会用到，**推理程序完全不需要**；无差别 GLOB 复制会让每个任务白占 2 个多 GB；
+#   2. 平台运行该程序时会把 TensorRT/CUDA 的 bin 目录加入 PATH，本来就找得到 DLL，
+#      复制只是为了让产物文件夹可以单独拷到别的机器上跑。
+# 需要「可独立拷走的产物」时，用 -DQFORGE_COPY_RUNTIME_DLLS=ON，并且只复制必需的那几个。
+set(QFORGE_COPY_RUNTIME_DLLS "{{ backend.copy_runtime_dlls|default('OFF') }}" CACHE STRING "是否把运行期 DLL 复制到产物目录（Windows）")
+set(QFORGE_RUNTIME_DLL_PATTERNS "nvinfer_*.dll;nvinfer_plugin_*.dll;cudart*.dll")
+
+if(QFORGE_COPY_RUNTIME_DLLS AND QFORGE_RUNTIME_DLL_DIRS)
+  set(QFORGE_RUNTIME_DLLS "")
+  foreach(pattern IN LISTS QFORGE_RUNTIME_DLL_PATTERNS)
+    foreach(dll_dir IN LISTS QFORGE_RUNTIME_DLL_DIRS)
+      if(EXISTS "${dll_dir}")
+        file(GLOB matched "${dll_dir}/${pattern}")
+        list(APPEND QFORGE_RUNTIME_DLLS ${matched})
+      endif()
+    endforeach()
+  endforeach()
+  # 明确排除体积巨大且运行期不需要的构建资源库
+  list(FILTER QFORGE_RUNTIME_DLLS EXCLUDE REGEX "nvinfer_builder_resource")
+  list(FILTER QFORGE_RUNTIME_DLLS EXCLUDE REGEX "nvinfer_dispatch")
+  list(FILTER QFORGE_RUNTIME_DLLS EXCLUDE REGEX "nvinfer_lean")
+  if(QFORGE_RUNTIME_DLLS)
+    list(REMOVE_DUPLICATES QFORGE_RUNTIME_DLLS)
+    add_custom_command(TARGET qforge_detector POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${QFORGE_RUNTIME_DLLS} $<TARGET_FILE_DIR:qforge_detector>
+      COMMENT "复制运行期必需的 DLL（nvinfer / plugin / cudart）")
   endif()
-endforeach()
+endif()

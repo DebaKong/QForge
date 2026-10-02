@@ -3,14 +3,25 @@
 隔离策略：
 - 每个测试用独立临时目录作为 storage_root，并通过 QFORGE_STORAGE_ROOT 注入；
 - 每个测试用独立的临时 SQLite 文件库（而非 :memory:），以便暴露真实的连接/锁行为；
+- **测试结果不随开发者本机 `.env` 变化**：这里显式覆盖与队列/执行方式/容器相关的开关
+  （环境变量优先级高于 .env，见 pydantic-settings 的取值顺序）；
 - 测试结束后释放全局引擎，避免用例间互相污染。
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+
+# ---- 必须在导入 app / workers 之前设置：这些模块在导入期就会读取配置 ----
+os.environ["QFORGE_ENVIRONMENT"] = "test"
+# 队列与执行方式固定为「进程内同步」，避免依赖本机是否装了 Redis
+os.environ["QFORGE_EXECUTOR_MODE"] = "local"
+os.environ["QFORGE_CELERY_TASK_ALWAYS_EAGER"] = "true"
+# 容器构建默认关闭（避免默认测试去拉镜像/构建镜像）
+os.environ["QFORGE_DOCKER_ENABLED"] = "false"
 
 import pytest
 from fastapi.testclient import TestClient
