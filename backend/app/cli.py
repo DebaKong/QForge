@@ -390,13 +390,15 @@ def cmd_init(args: argparse.Namespace) -> int:
     root = settings.resolved_storage_root
     root.mkdir(parents=True, exist_ok=True)
 
-    from app.db.base import create_all
+    from app.db.migrations import apply_migrations
 
-    create_all()
+    # 迁移脚本随包分发，安装形态下不需要仓库里的 alembic.ini
+    result = apply_migrations()
     print(f"数据目录：{root}")
     print(f"数据库  ：{settings.resolved_database_url}")
-    print("表结构已就绪（正式 schema 变更以 Alembic 迁移为准：alembic -c backend/alembic.ini upgrade head）")
-    if args.build_frontend:
+    print(f"表结构  ：{result.describe()}")
+    print("（升级到新版本后重新执行一次 qforge init 即可应用新迁移）")
+    if getattr(args, "build_frontend", False):
         return cmd_build_frontend(args)
     return 0
 
@@ -426,13 +428,18 @@ def cmd_serve(args: argparse.Namespace) -> int:
         worker = _spawn_worker(args.concurrency)
 
     frontend = settings.resolved_frontend_dir
+    if mode == "celery":
+        executor_text = (
+            "Redis + Celery（worker 未自动带起：--no-worker；请另行执行 qforge worker）"
+            if args.no_worker
+            else "Redis + Celery（已自动带起 worker）"
+        )
+    else:
+        executor_text = "进程内后台执行器（无需 Redis）"
     print()
     print(f"{settings.app_name} {settings.app_version}")
     print(f"  数据目录 : {settings.resolved_storage_root}")
-    print(
-        "  执行方式 : "
-        + ("Redis + Celery（已自动带起 worker）" if mode == "celery" else "进程内后台执行器（无需 Redis）")
-    )
+    print(f"  执行方式 : {executor_text}")
     print(f"  前端界面 : {frontend if frontend else '未构建（显示内置说明页）'}")
     print(f"  访问地址 : {url}")
     print(f"  接口文档 : {url}{settings.api_prefix}/docs")
@@ -484,7 +491,9 @@ def cmd_worker(args: argparse.Namespace) -> int:
 
 
 def cmd_build_frontend(args: argparse.Namespace) -> int:
-    source = Path(args.source).expanduser() if args.source else None
+    source_arg = getattr(args, "source", None)
+    publish = bool(getattr(args, "publish", False))
+    source = Path(source_arg).expanduser() if source_arg else None
     if source is None:
         root = project_root()
         source = (root / "frontend") if root is not None else None
@@ -517,7 +526,7 @@ def cmd_build_frontend(args: argparse.Namespace) -> int:
     dist = source / "dist"
     print(f"前端已构建：{dist}")
 
-    if args.publish:
+    if publish:
         target = data_root().parent / "web"
         if target.exists():
             shutil.rmtree(target)
