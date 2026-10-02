@@ -52,8 +52,8 @@ where = ["backend", "."]
 include = ["app*", "workers*"]
 
 [tool.setuptools.package-data]
-# 代码生成模板必须随包分发，否则安装后无法生成工程
-app = ["codegen/templates/**/*.j2"]
+# 代码生成模板与数据库迁移必须随包分发，否则安装后无法生成工程 / 无法升级表结构
+app = ["codegen/templates/**/*.j2", "migrations/**/*"]
 
 [tool.pytest.ini_options]
 # backend/ 提供 `app` 包，仓库根提供 `workers` 包（SPEC 附录 A 目录结构）

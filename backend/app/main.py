@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 
 from app.api import build_api_router
 from app.config.settings import get_settings
-from app.db.base import create_all
+from app.db.migrations import apply_migrations
 from app.errors import DomainError, ErrorCode
 from app.logging_config import configure_logging
 from app.web_static import register_frontend
@@ -32,11 +32,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings.resolved_storage_root.mkdir(parents=True, exist_ok=True)
 
     if settings.auto_create_schema:
-        create_all()
-        logger.info(
-            "已确保表结构存在（auto_create_schema；正式迁移以 Alembic 为准）",
-            extra={"storage_root": str(settings.resolved_storage_root)},
-        )
+        # 安装形态下用户没有仓库里的 alembic.ini，因此迁移由包内脚本 + 代码配置驱动；
+        # 失败会直接抛出（不静默降级），避免带着错误表结构继续运行。
+        result = apply_migrations()
+        logger.info("表结构检查：%s", result.describe(), extra={"storage_root": str(settings.resolved_storage_root)})
     yield
 
 
