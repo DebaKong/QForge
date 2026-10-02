@@ -1,36 +1,59 @@
-# 生成文件：{{ architecture }} {{ precision }} 推理工程运行镜像（SPEC 12.2）
+# 生成文件：{{ architecture }} {{ precision_label }} 推理工程镜像（SPEC 12.2）
 #
-# 说明（务必先读）：
-#   1. 基础镜像 tag 属版本敏感项（SPEC 4.1），必须与构建 Engine 时的
-#      TensorRT / CUDA 版本一致，否则 Engine 反序列化会失败（Engine 与构建环境强绑定）。
-#      本工程 Engine 构建环境：TensorRT {{ backend.version }} / CUDA {{ backend.cuda_version }}。
-#   2. 因此这里用 ARG 暴露基础镜像，**首次构建前请确认 tag 可用**，不要直接依赖默认值。
-#   3. 镜像构建属 SPEC 2.1 的「可选生成镜像」，需要 Docker daemon 可用。
+# 设计说明（三个真实约束决定了这个结构）：
+#   1. 平台生成的 C++ 工程在 Windows 侧编译成 .exe，**不能在 Linux 容器里运行**，
+#      因此镜像在容器内重新编译同一份源码（同一份代码、两种平台都能构建运行）。
+#   2. TensorRT 官方镜像只带 TRT 头文件与 CUDA 运行库，**不含 cuda_runtime_api.h**，
+#      因此 CUDA 头文件随构建上下文（cuda-include/）提供。
+#   3. TensorRT 计划文件是**平台相关**的（Windows 构建的 Engine 在 Linux 加载会报
+#      `Platform specific tag mismatch`），且 docker build 阶段默认没有 GPU，
+#      因此 Engine 由启动脚本在容器启动时按需重建（见 entrypoint.sh）。
+#
+# 基础镜像：{{ base_image }}（TensorRT / CUDA 版本已在 docs/versions.md 记录）
+#
+# syntax=docker/dockerfile:1
 
-ARG BASE_IMAGE=nvcr.io/nvidia/tensorrt:REPLACE_WITH_CONFIRMED_TAG
-FROM ${BASE_IMAGE}
+ARG BASE_IMAGE={{ base_image }}
 
-ARG DEBIAN_FRONTEND=noninteractive
+# ---------------- 构建阶段：编译生成的 C++ 工程（不需要 GPU） ----------------
+FROM ${BASE_IMAGE} AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /build
+
+COPY source/ /build/source/
+COPY cuda-include/ /opt/qforge-cuda-include/
+# CMake 对每个依赖独立解析：TensorRT 由镜像提供，CUDA 头文件用上面这份
+RUN cmake -S /build/source -B /build/source/build -DCMAKE_BUILD_TYPE=Release \
+      -DQFORGE_CUDA_INCLUDE_DIRS=/opt/qforge-cuda-include \
+ && cmake --build /build/source/build --parallel "$(nproc)" \
+ && test -x /build/source/build/qforge_detector
+
+# ---------------- 运行阶段 ----------------
+FROM ${BASE_IMAGE} AS runtime
+
 WORKDIR /opt/qforge
 
-ENV QFORGE_TASK_ID={{ task_id }} \
-    QFORGE_PRECISION={{ precision }}
-
-# 运行期只需要：可执行文件、TensorRT/CUDA 运行库（由基础镜像提供）、Engine 与样例输入
-COPY source/ /opt/qforge/source/
-COPY model/{{ engine_filename }} /opt/qforge/model/{{ engine_filename }}
+COPY --from=builder /build/source/build/qforge_detector /opt/qforge/bin/qforge_detector
+COPY model/ /opt/qforge/model/
+{% if has_calibration %}COPY calibration/ /opt/qforge/calibration/
+{% endif %}COPY entrypoint.sh /opt/qforge/entrypoint.sh
 COPY config/ /opt/qforge/config/
 COPY test/ /opt/qforge/test/
 COPY report/ /opt/qforge/report/
 
-# 以非 root 运行（SPEC 12.1：默认最小权限）
+# SPEC 12.1：默认以最小权限的非 root 用户运行
 RUN useradd --create-home --shell /bin/bash qforge \
-    && chown -R qforge:qforge /opt/qforge
+ && chmod +x /opt/qforge/entrypoint.sh \
+ && chown -R qforge:qforge /opt/qforge
 USER qforge
 
-# 默认做一次真实推理，验证镜像内 Engine 可加载（加载失败即容器失败退出）
-ENTRYPOINT ["/opt/qforge/source/build/qforge_detector"]
-CMD ["--engine", "/opt/qforge/model/{{ engine_filename }}", \
+ENV PRECISION={{ precision_label }} \
+    REBUILD_ENGINE={{ rebuild_engine_default }}
+
+# 启动脚本会（必要时）用目标机 GPU 重建 Engine，然后执行下面的推理命令
+ENTRYPOINT ["/opt/qforge/entrypoint.sh"]
+CMD ["--engine", "/opt/qforge/model/model.engine", \
      "--image", "/opt/qforge/test/sample.ppm", \
-     "--output", "/opt/qforge/report/image_result.json", \
+     "--output", "/opt/qforge/report/container_result.json", \
      "--iterations", "3"]

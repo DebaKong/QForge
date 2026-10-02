@@ -127,6 +127,11 @@ def run_codegen(context: PipelineContext) -> None:
         task_id=context.task_id,
         precision=context.precision,
         engine_filename=context.engine_path.name,
+        base_image=context.settings.docker_base_image,
+        onnx_filename=context.onnx_path.name if context.onnx_path else "model.onnx",
+        has_calibration=context.precision == "int8",
+        calibration_cache_filename=context.settings.calibration_cache_filename,
+        engine_metadata=context.engine_metadata,
     )
 
     logger.info("代码生成完成：%s 个文件；Dockerfile：%s", len(project.files), dockerfile.name)

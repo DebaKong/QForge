@@ -11,12 +11,13 @@ requires-python = ">=3.10,<3.11"
 # backend/ 提供 `app` 包，仓库根提供 `workers` 包（SPEC 附录 A 目录结构）
 pythonpath = ["backend", "."]
 testpaths = ["tests"]
-addopts = "-q --strict-markers"
+addopts = "-q --strict-markers -m 'not gpu and not cpp and not docker'"
 filterwarnings = ["error::DeprecationWarning:app.*"]
 markers = [
     "slow: 需要外部服务或耗时较长的用例",
     "gpu: 需要 NVIDIA GPU + TensorRT，会真实构建 Engine 并推理（默认跳过）",
     "cpp: 需要 TensorRT/CUDA 开发文件与 MSVC 工具链，会真实编译并运行生成的工程（默认跳过）",
+    "docker: 需要 Docker daemon 与 TensorRT 基础镜像，会真实构建并运行容器镜像（默认跳过）",
 ]
 
 [tool.ruff]

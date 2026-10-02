@@ -26,7 +26,9 @@ SPEC 4.1 要求：版本敏感组件必须锁定并记录**具体版本**，不�
 | **CMake** | 4.4.3（pip 安装，`<env>\Scripts\cmake.exe`） | 已锁定并验证 |
 | **Ninja** | 1.13.2（pip 安装） | 已锁定并验证 |
 | 工具链根目录 | `D:\qforge-toolchain\{tensorrt,cuda}`（自动探测，可用环境变量覆盖） | 已验证 |
-| Docker CLI / Compose | 29.8.0 / v5.5.1 | 已安装，**daemon 未运行**（镜像构建未验证） |
+| Docker CLI / Compose | 29.8.0 / v5.5.1 | daemon 已验证可用（server 29.8.1，linux/x86_64） |
+| Docker 镜像加速 | `https://docker.m.daocloud.io`（daemon.json 已配置） | 已验证（Docker Hub 直连不可达，经镜像可拉取） |
+| **容器基础镜像** | **`nvcr.io/nvidia/tensorrt:26.03-py3`** → TensorRT **10.16.0.72** / CUDA **13.2.0** | 已核对镜像配置元数据（与 Engine 构建环境同一 TensorRT 小版本线） |
 | WSL | Ubuntu-22.04（Stopped） | 已探测 |
 | gcc / g++（MinGW） | `D:\Visual_Studio_Code_2025\MinGW\bin` | 存在但**不使用**（TRT 官方库为 MSVC ABI） |
 

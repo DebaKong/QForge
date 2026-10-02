@@ -118,6 +118,7 @@ npm run dev      # http://127.0.0.1:5173，/api 自动代理到 127.0.0.1:8000
 # 必须在仓库根执行（pytest 的 pythonpath 由 pyproject.toml 提供）
 python -m pytest -q                 # 默认套件：143 项，纯 CPU，不需要 GPU
 python -m pytest -m gpu -q -s       # 端到端：真实构建 Engine、编译 C++ 并推理（需要上面的工具链）
+python -m pytest -m docker -q -s    # 容器：真实 docker build + 容器内推理（需要 Docker daemon 与基础镜像）
 ```
 
 ## 配置
@@ -135,6 +136,10 @@ python -m pytest -m gpu -q -s       # 端到端：真实构建 Engine、编译 C
 | `QFORGE_CELERY_RESULT_BACKEND` | `redis://127.0.0.1:6379/1` | 结果后端 |
 | `QFORGE_MAX_UPLOAD_MB` / `QFORGE_MAX_ZIP_*` | 见 .env.example | SPEC 15 资源与安全限制（阶段 1 起强制执行） |
 | `QFORGE_TASK_TIMEOUT_SECONDS` | `3600` | 任务超时上限（已用于 Celery `task_time_limit`） |
+| `QFORGE_EXECUTOR_MODE` | `local` | `local`（进程内后台执行器）或 `celery`（接入 Redis 后） |
+| `QFORGE_DOCKER_BASE_IMAGE` | `nvcr.io/nvidia/tensorrt:26.03-py3` | 容器基础镜像（含 TensorRT 10.16 / CUDA 13.2） |
+| `QFORGE_DOCKER_ENABLED` | `false` | 是否默认构建容器镜像（SPEC 2.1 列为可选；也可由任务配置 `build.docker_build` 打开） |
+| `QFORGE_TENSORRT_ROOT` / `QFORGE_CUDA_ROOT` | 空（自动探测） | TensorRT / CUDA 开发文件所在目录 |
 | `QFORGE_MAX_CONCURRENT_TASKS` | `1` | 并发上限（阶段 1 起强制执行） |
 
 ## API

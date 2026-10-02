@@ -97,6 +97,15 @@ class Settings(BaseSettings):
         Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA"),
     ]
 
+    # ---- 容器产物（SPEC 12）----
+    # 基础镜像 tag 属版本敏感项：该 tag 内的 TensorRT/CUDA 版本已在 docs/versions.md 记录
+    # （26.03-py3 对应 TensorRT 10.16.0.72 / CUDA 13.2，与 Engine 构建环境同一 TRT 小版本线）
+    docker_base_image: str = "nvcr.io/nvidia/tensorrt:26.03-py3"
+    # 镜像构建属 SPEC 2.1 的「可选生成镜像」：默认关闭，任务配置 build.docker_build 打开
+    docker_enabled: bool = False
+    docker_build_timeout_seconds: int = 3600
+    docker_run_timeout_seconds: int = 300
+
     @property
     def resolved_storage_root(self) -> Path:
         return self.storage_root.resolve()

@@ -154,9 +154,27 @@ def test_dockerfile_generation(tmp_path: Path) -> None:
         task_id="task-1",
         precision="int8",
         engine_filename="model.engine",
+        base_image="nvcr.io/nvidia/tensorrt:26.03-py3",
+        onnx_filename="synth.onnx",
+        has_calibration=True,
     )
     content = path.read_text(encoding="utf-8")
-    assert "FROM ${BASE_IMAGE}" in content
-    assert "REPLACE_WITH_CONFIRMED_TAG" in content  # 基础镜像 tag 必须人工确认
-    assert "QFORGE_PRECISION=INT8" in content
+    # 多阶段构建：Windows 侧编出的是 .exe，必须在容器内重新编译才可运行
+    assert "FROM ${BASE_IMAGE} AS builder" in content
+    assert "FROM ${BASE_IMAGE} AS runtime" in content
+    assert "nvcr.io/nvidia/tensorrt:26.03-py3" in content
+    assert "cmake --build /build/source/build" in content
+    # CUDA 头文件随构建上下文提供（TRT 官方镜像不含 cuda_runtime_api.h）
+    assert "COPY cuda-include/" in content
+    assert "-DQFORGE_CUDA_INCLUDE_DIRS=/opt/qforge-cuda-include" in content
     assert "USER qforge" in content
+    assert "/opt/qforge/test/sample.ppm" in content
+    assert 'ENTRYPOINT ["/opt/qforge/entrypoint.sh"]' in content
+
+    # Engine 重建放在容器启动时（TRT 计划文件平台相关，且 docker build 阶段无 GPU）
+    entrypoint = (tmp_path / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+    assert "trtexec" in entrypoint
+    assert "--int8" in entrypoint
+    assert "CALIB=/opt/qforge/calibration/" in entrypoint
+    assert "REBUILD_ENGINE" in entrypoint
+    assert "exec /opt/qforge/bin/qforge_detector" in entrypoint

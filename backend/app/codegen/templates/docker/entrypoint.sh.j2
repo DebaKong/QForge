@@ -1,0 +1,42 @@
+#!/bin/bash
+# 生成文件：容器启动脚本
+#
+# 为什么在启动时重建 Engine：TensorRT 的计划文件是**平台相关**的——
+# 平台侧（Windows）构建的 .engine 在 Linux 容器里加载会报
+# `Platform specific tag mismatch`；而 `docker build` 阶段默认拿不到 GPU，
+# 无法在构建期用 trtexec 建 Engine。因此在容器启动（目标机 GPU 可用）时按需重建。
+#
+# 环境变量：
+#   PRECISION      {{ precision_label }}
+#   REBUILD_ENGINE 1  = 每次都重建；auto（默认）= 仅当镜像内没有可用 Engine 时重建
+set -euo pipefail
+
+ENGINE=/opt/qforge/model/model.engine
+PRECISION="${PRECISION:-{{ precision_label }}}"
+REBUILD_ENGINE="${REBUILD_ENGINE:-auto}"
+ONNX=/opt/qforge/model/{{ onnx_filename }}
+CALIB=/opt/qforge/calibration/{{ calibration_cache_filename }}
+
+rebuild() {
+  echo "[qforge] 在容器内重建 Engine（精度 ${PRECISION}，TensorRT $(trtexec --version 2>/dev/null | tail -1 || echo '?')）"
+  local flags=""
+  case "${PRECISION}" in
+    FP16) flags="--fp16" ;;
+    INT8) flags="--int8"
+          if [ -f "${CALIB}" ]; then flags="${flags} --calib=${CALIB}"; fi ;;
+    *)    flags="" ;;
+  esac
+  # shellcheck disable=SC2086
+  trtexec --onnx="${ONNX}" --saveEngine="${ENGINE}" ${flags} --skipInference
+}
+
+if [ "${REBUILD_ENGINE}" = "1" ] || [ ! -f "${ENGINE}" ]; then
+  if [ -f "${ONNX}" ]; then
+    rebuild
+  else
+    echo "[qforge] 警告：镜像内既没有 Engine 也没有 ONNX 模型，无法重建" >&2
+  fi
+fi
+
+echo "[qforge] 启动推理程序：$*"
+exec /opt/qforge/bin/qforge_detector "$@"

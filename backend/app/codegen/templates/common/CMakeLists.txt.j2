@@ -1,6 +1,8 @@
 # 生成文件：C++ 推理工程构建脚本（SPEC 11.2 生成物）
-# 依赖路径由 QForge 平台在生成时注入（来自实际安装的 TensorRT / CUDA 运行时），
-# 因此这里的路径就是「Engine 构建环境」的一部分，与 engine_metadata.json 相互印证。
+#
+# 设计：每个依赖独立解析，且**注入的库名必须能被实际解析**才使用——因为平台在 Windows 侧
+# 生成的库名带版本后缀（如 nvinfer_10），直接拿到 Linux 容器里链接会失败。
+# 这样同一份生成源码在 Windows 与 Linux 容器里都能直接构建。
 cmake_minimum_required(VERSION 3.20)
 project(qforge_detector LANGUAGES CXX)
 
@@ -12,7 +14,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# ---- 由平台注入的依赖路径（可用 -D 覆盖）----
+# ---- 平台生成时注入的依赖信息（Windows 侧）----
 set(QFORGE_TRT_INCLUDE_DIRS "{{ backend.tensorrt_include_dirs|join(';') }}" CACHE STRING "TensorRT include dirs")
 set(QFORGE_TRT_LIB_DIRS "{{ backend.tensorrt_lib_dirs|join(';') }}" CACHE STRING "TensorRT lib dirs")
 set(QFORGE_TRT_LIBS "{{ backend.tensorrt_libs|join(';') }}" CACHE STRING "TensorRT libs")
@@ -20,6 +22,77 @@ set(QFORGE_CUDA_INCLUDE_DIRS "{{ backend.cuda_include_dirs|join(';') }}" CACHE S
 set(QFORGE_CUDA_LIB_DIRS "{{ backend.cuda_lib_dirs|join(';') }}" CACHE STRING "CUDA lib dirs")
 set(QFORGE_CUDA_LIBS "{{ backend.cuda_libs|join(';') }}" CACHE STRING "CUDA libs")
 set(QFORGE_RUNTIME_DLL_DIRS "{{ backend.runtime_dll_dirs|join(';') }}" CACHE STRING "运行期 DLL 目录")
+
+set(QFORGE_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include)
+set(QFORGE_LIB_HINTS ${QFORGE_TRT_LIB_DIRS} ${QFORGE_CUDA_LIB_DIRS}
+    ENV TENSORRT_ROOT ENV TENSORRT_DIR ENV CUDA_HOME ENV CUDA_ROOT
+    /usr/local/tensorrt /opt/tensorrt /usr/local/cuda)
+
+# 把一组库名解析成绝对路径；找不到的会被丢弃（交由调用方回退到自动探测）
+function(qforge_resolve_libs out_var)
+  set(resolved "")
+  foreach(name IN LISTS ARGN)
+    string(MAKE_C_IDENTIFIER "${name}" identifier)
+    find_library(QFORGE_RESOLVED_${identifier} NAMES ${name}
+      HINTS ${QFORGE_LIB_HINTS}
+      PATHS /usr/lib/x86_64-linux-gnu /usr/lib /usr/local/lib
+      PATH_SUFFIXES lib lib64)
+    if(QFORGE_RESOLVED_${identifier})
+      list(APPEND resolved ${QFORGE_RESOLVED_${identifier}})
+    endif()
+  endforeach()
+  set(${out_var} "${resolved}" PARENT_SCOPE)
+endfunction()
+
+# ---------------- TensorRT ----------------
+if(NOT QFORGE_TRT_INCLUDE_DIRS)
+  find_path(QFORGE_TRT_INCLUDE_DIRS NvInfer.h
+    HINTS ENV TENSORRT_ROOT ENV TENSORRT_DIR /usr/local/tensorrt /opt/tensorrt
+    PATHS /usr/include/x86_64-linux-gnu /usr/include /usr/local/include
+    PATH_SUFFIXES include)
+endif()
+if(NOT QFORGE_TRT_INCLUDE_DIRS)
+  message(FATAL_ERROR "未找到 TensorRT 头文件（NvInfer.h）：请注入 QFORGE_TRT_INCLUDE_DIRS，或使用自带 TensorRT 的基础镜像")
+endif()
+
+set(QFORGE_TRT_LINK "")
+if(QFORGE_TRT_LIBS)
+  qforge_resolve_libs(QFORGE_TRT_LINK ${QFORGE_TRT_LIBS})
+endif()
+if(NOT QFORGE_TRT_LINK)
+  qforge_resolve_libs(QFORGE_TRT_LINK nvinfer nvonnxparser nvinfer_plugin)
+endif()
+if(NOT QFORGE_TRT_LINK)
+  message(FATAL_ERROR "未找到 TensorRT 运行库（libnvinfer）：请注入 QFORGE_TRT_LIBS/QFORGE_TRT_LIB_DIRS 或提供相应基础镜像")
+endif()
+
+# ---------------- CUDA 运行时 ----------------
+if(NOT QFORGE_CUDA_INCLUDE_DIRS)
+  find_path(QFORGE_CUDA_INCLUDE_DIRS cuda_runtime_api.h
+    HINTS ENV CUDA_HOME ENV CUDA_ROOT /usr/local/cuda
+    PATHS /usr/include/x86_64-linux-gnu /usr/include /usr/local/include
+    PATH_SUFFIXES include)
+endif()
+if(NOT QFORGE_CUDA_INCLUDE_DIRS)
+  message(FATAL_ERROR "未找到 CUDA 头文件（cuda_runtime_api.h）：请注入 QFORGE_CUDA_INCLUDE_DIRS")
+endif()
+
+set(QFORGE_CUDA_LINK "")
+if(QFORGE_CUDA_LIBS)
+  qforge_resolve_libs(QFORGE_CUDA_LINK ${QFORGE_CUDA_LIBS})
+endif()
+if(NOT QFORGE_CUDA_LINK)
+  qforge_resolve_libs(QFORGE_CUDA_LINK cudart)
+endif()
+if(NOT QFORGE_CUDA_LINK)
+  message(FATAL_ERROR "未找到 CUDA 运行库（libcudart）：请注入 QFORGE_CUDA_LIBS/QFORGE_CUDA_LIB_DIRS")
+endif()
+
+list(APPEND QFORGE_INCLUDE_DIRS ${QFORGE_TRT_INCLUDE_DIRS} ${QFORGE_CUDA_INCLUDE_DIRS})
+message(STATUS "TensorRT include: ${QFORGE_TRT_INCLUDE_DIRS}")
+message(STATUS "TensorRT libs   : ${QFORGE_TRT_LINK}")
+message(STATUS "CUDA include    : ${QFORGE_CUDA_INCLUDE_DIRS}")
+message(STATUS "CUDA libs       : ${QFORGE_CUDA_LINK}")
 
 add_executable(qforge_detector
   src/main.cpp
@@ -30,28 +103,17 @@ add_executable(qforge_detector
   src/yolov8_decoder.cpp
 )
 
-target_include_directories(qforge_detector PRIVATE
-  ${CMAKE_CURRENT_SOURCE_DIR}/include
-  ${QFORGE_TRT_INCLUDE_DIRS}
-  ${QFORGE_CUDA_INCLUDE_DIRS}
-)
-
-target_link_directories(qforge_detector PRIVATE
-  ${QFORGE_TRT_LIB_DIRS}
-  ${QFORGE_CUDA_LIB_DIRS}
-)
-
-target_link_libraries(qforge_detector PRIVATE
-  ${QFORGE_TRT_LIBS}
-  ${QFORGE_CUDA_LIBS}
-)
+target_include_directories(qforge_detector PRIVATE ${QFORGE_INCLUDE_DIRS})
+target_link_libraries(qforge_detector PRIVATE ${QFORGE_TRT_LINK} ${QFORGE_CUDA_LINK})
 
 if(MSVC)
   target_compile_options(qforge_detector PRIVATE /W3 /EHsc /utf-8 /MP)
   target_compile_definitions(qforge_detector PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+else()
+  target_compile_options(qforge_detector PRIVATE -Wall -Wextra -O2)
 endif()
 
-# 复制运行期依赖的 DLL 到产物目录，使程序可直接运行（TensorRT/CUDA 由 pip 包提供）
+# Windows：把运行期依赖的 DLL 复制到产物目录（Linux 容器内由基础镜像提供）
 foreach(dll_dir IN LISTS QFORGE_RUNTIME_DLL_DIRS)
   if(EXISTS "${dll_dir}")
     file(GLOB QFORGE_DLLS "${dll_dir}/*.dll")

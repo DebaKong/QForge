@@ -102,8 +102,119 @@ def _write_archive(staging: Path, archive_path: Path) -> int:
     return file_count
 
 
+def _cuda_include_dirs(context: PipelineContext) -> list[Path]:
+    """编译容器内工程所需的 CUDA 头文件目录。
+
+    TensorRT 官方镜像只提供 TRT 头文件与 CUDA **运行库**，不含 cuda_runtime_api.h
+    与 crt/*；平台侧已有这些头文件（Windows 编译同样需要），因此随构建上下文一并提供。
+    """
+    from app.adapters.backends import tensorrt_dev
+
+    files = tensorrt_dev.locate_dev_files(context.settings)
+    return [Path(item) for item in files.cuda_include_dirs]
+
+
+def _run_docker_step(context: PipelineContext) -> None:
+    """可选：构建容器镜像（SPEC 12.1：由受控 Worker 执行，日志完整保留）。
+
+    三态汇报，绝不伪造：
+    - SKIPPED：任务配置未开启 `build.docker_build`（SPEC 2.1：生成镜像本身是可选项）；
+    - BLOCKED：Docker daemon 不可用，如实记录原因；
+    - SUCCESS / FAILED：真实执行 `docker build`（失败即任务 FAILED）。
+    """
+    from app.services import docker_build
+
+    enabled = bool(context.build_options.get("docker_build", context.settings.docker_enabled))
+    base_image = context.settings.docker_base_image
+    report_path = context.report_file("docker_build.json")
+
+    if not enabled:
+        write_json(
+            report_path,
+            {
+                "status": "SKIPPED",
+                "reason": "任务配置未开启 build.docker_build（SPEC 2.1 将「生成镜像」列为可选项）",
+                "dockerfile": "docker/Dockerfile",
+                "base_image": base_image,
+            },
+        )
+        context.reports.append("report/docker_build.json")
+        logger.info("未开启镜像构建，跳过（Dockerfile 已生成）")
+        return
+
+    available, info = docker_build.docker_available()
+    if not available:
+        write_json(
+            report_path,
+            {
+                "status": "BLOCKED",
+                "reason": info.get("reason"),
+                "docker": info,
+                "dockerfile": "docker/Dockerfile",
+                "base_image": base_image,
+            },
+        )
+        context.reports.append("report/docker_build.json")
+        logger.warning("Docker 不可用，镜像构建标记为 BLOCKED：%s", info.get("reason"))
+        return
+
+    assert context.engine_path is not None
+    context_dir = context.intermediate_dir / "docker-context"
+    docker_build.stage_context(
+        context_dir=context_dir,
+        dockerfile=context.docker_dir / "Dockerfile",
+        source_dir=context.source_dir or context.source_root,
+        engine_path=context.engine_path,
+        engine_metadata_path=context.engine_dir / "engine_metadata.json",
+        config_file=context.source_root / "config" / "model.yaml",
+        test_dir=context.source_root / "test",
+        report_dir=context.report_dir,
+        onnx_path=context.onnx_path,
+        calibration_cache=context.intermediate_dir
+        / context.settings.calibration_cache_filename,
+        cuda_include_dirs=_cuda_include_dirs(context),
+    )
+
+    image_tag = f"qforge-{context.task_id[:12]}:{context.precision}"
+    result = docker_build.build_image(
+        context_dir=context_dir,
+        image_tag=image_tag,
+        log_path=context.log_file("docker_build.log"),
+        timeout_seconds=context.settings.docker_build_timeout_seconds,
+        base_image=base_image,
+        # 默认在容器内重建 Engine：TensorRT 计划文件是平台相关的，
+        # Windows 侧构建的 Engine 在 Linux 容器中加载会报 Platform specific tag mismatch（实测）。
+        rebuild_engine=bool(context.build_options.get("docker_rebuild_engine", True)),
+    )
+    payload: dict[str, Any] = {
+        "status": "SUCCESS",
+        "image_tag": image_tag,
+        "base_image": base_image,
+        "dockerfile": "docker/Dockerfile",
+        "build": result.to_dict(),
+    }
+
+    if context.build_options.get("docker_run", False):
+        run_result = docker_build.run_container(
+            image_tag=image_tag,
+            log_path=context.log_file("docker_run.log"),
+            timeout_seconds=context.settings.docker_run_timeout_seconds,
+            extra_args=["--gpus", "all"],
+        )
+        payload["container_run"] = run_result.to_dict()
+        logger.info(
+            "容器运行验证：%s（退出码 %s）",
+            "SUCCESS" if run_result.ok else "FAILED",
+            run_result.returncode,
+        )
+
+    write_json(report_path, payload)
+    context.reports.append("report/docker_build.json")
+
+
 def run_packaging(context: PipelineContext) -> None:
     """归档产物、写入 Artifact 行、汇总报告（SPEC 12.2 / 13.1）。"""
+    _run_docker_step(context)
     staging = _assemble_artifact_tree(context)
     archive_path = context.report_dir / "artifact.zip"
     file_count = _write_archive(staging, archive_path)
@@ -132,19 +243,13 @@ def run_packaging(context: PipelineContext) -> None:
         add("source", context.source_dir / "CMakeLists.txt", "CMake 构建脚本")
         add("config", context.source_dir / "config" / "model.yaml", "模型与预处理配置")
     add("docker", context.docker_dir / "Dockerfile", "运行镜像 Dockerfile")
+    add("docker", context.docker_dir / "entrypoint.sh", "容器启动脚本")
     add("report", archive_path, "完整产物归档（SPEC 12.2 artifact 结构）")
-    for name in (
-        "model_info.json",
-        "compatibility.json",
-        "preprocessing.json",
-        "quantization.json",
-        "engine_build.json",
-        "codegen.json",
-        "cpp_build.json",
-        "runtime_verification.json",
-        "accuracy.json",
-    ):
-        add("report", context.report_file(name), f"报告 {name}")
+    # 报告按**实际生成**的清单登记（而不是写死名单，否则新增报告会漏登记）
+    # 注意：context.reports 中的路径是相对**任务目录**的（如 report/model_info.json）
+    for relative in dict.fromkeys(context.reports):
+        report_path = context.task_dir / relative
+        add("report", report_path, f"报告 {Path(relative).name}")
 
     with session_scope() as session:
         task = task_service.get_task(session, context.task_id)
