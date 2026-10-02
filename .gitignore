@@ -72,6 +72,16 @@ pnpm-debug.log*
 secrets/
 credentials/
 
+# ---------- Python 打包产物（pip install . / 构建 wheel） ----------
+# 安装即用路径会执行 pip install，这些是构建副产物，不入库
+*.egg-info/
+*.egg
+.eggs/
+PKG-INFO
+MANIFEST
+wheels/
+pip-wheel-metadata/
+
 # ---------- 运行时数据：storage/ 与 artifact/ ----------
 # SPEC 14.2 / 12.2：上传文件、中间文件、Engine、产物均属运行时数据
 storage/*

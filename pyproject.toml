@@ -1,11 +1,59 @@
+[build-system]
+# 安装即用：`pip install .` 即可得到 `qforge` 命令（AGENTS.md 产品形态要求）
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "qforge"
 version = "0.1.0"
 description = "QForge — ONNX 自动化量化部署平台（SPEC.md V1.0）"
+readme = "README.md"
 # SPEC 4.1：版本矩阵必须固定。项目统一使用 Python 3.10（conda env: qforge）。
 requires-python = ">=3.10,<3.11"
+# 运行期依赖：与 backend/requirements.txt 保持一致（有测试防止漂移）。
+# tensorrt 由 pip 提供运行库，**无需登录 NVIDIA 账号**；仅「编译生成的 C++ 工程」
+# 才需要官方开发包（见 docs/portable.md）。
+dependencies = [
+    # ---- Web / 数据库 / 队列 ----
+    "fastapi==0.142.2",
+    "uvicorn[standard]==0.54.0",
+    "SQLAlchemy==2.0.54",
+    "alembic==1.20.0",
+    "pydantic==2.13.5",
+    "pydantic-settings==2.15.0",
+    "celery==5.6.3",
+    "redis==8.1.0",
+    # ---- 模型校验 / 预处理 / 代码生成 / 上传 ----
+    "onnx==1.23.1",
+    "onnxruntime==1.23.2",
+    "numpy==2.2.6",
+    "opencv-python-headless==5.0.0.93",
+    "pillow==12.3.0",
+    "Jinja2==3.1.6",
+    "PyYAML==6.0.3",
+    "python-multipart==0.0.32",
+    "psutil==7.2.2",
+    # ---- 本地构建链与 GPU ----
+    "cmake==4.4.3",
+    "ninja==1.13.2",
+    "cuda-python==13.4.1",
+    "tensorrt==10.16.1.11",
+]
 
-# 说明：本仓库不做打包分发，仅使用该文件承载工具配置与版本约束。
+[project.optional-dependencies]
+dev = ["pytest==9.1.1", "httpx==0.28.1"]
+
+[project.scripts]
+qforge = "app.cli:main"
+
+[tool.setuptools.packages.find]
+# backend/ 提供 app 包，仓库根提供 workers 包（SPEC 附录 A 目录结构）
+where = ["backend", "."]
+include = ["app*", "workers*"]
+
+[tool.setuptools.package-data]
+# 代码生成模板必须随包分发，否则安装后无法生成工程
+app = ["codegen/templates/**/*.j2"]
 
 [tool.pytest.ini_options]
 # backend/ 提供 `app` 包，仓库根提供 `workers` 包（SPEC 附录 A 目录结构）

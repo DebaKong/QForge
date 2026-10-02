@@ -21,6 +21,7 @@ from app.config.settings import get_settings
 from app.db.base import create_all
 from app.errors import DomainError, ErrorCode
 from app.logging_config import configure_logging
+from app.web_static import register_frontend
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title=f"{settings.app_name} API",
         version=settings.app_version,
-        description="ONNX 自动化量化部署平台 API（SPEC.md V1.0；当前实现阶段：阶段 0）",
+        description="ONNX 自动化量化部署平台 API（SPEC.md V1.0；当前实现阶段：阶段 1）",
         lifespan=lifespan,
     )
 
@@ -93,6 +94,8 @@ def create_app() -> FastAPI:
 
     app.include_router(build_api_router(), prefix=settings.api_prefix)
     register_exception_handlers(app)
+    # 安装即用：已构建的前端由 API 直接托管（运行期不需要 Node / Vite）
+    register_frontend(app, settings.resolved_frontend_dir, api_prefix=settings.api_prefix)
     return app
 
 

@@ -309,7 +309,9 @@ def enqueue_task(session: Session, task_id: str) -> Task:
 
     settings = get_settings()
     executor = None
-    if settings.executor_mode == "local":
+    from app.config.runtime import effective_executor_mode
+
+    if effective_executor_mode(settings) == "local":
         from app.services.executor import get_executor
 
         executor = get_executor()

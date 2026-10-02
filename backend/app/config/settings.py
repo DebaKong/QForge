@@ -14,18 +14,21 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.paths import config_file, data_root, frontend_dir
 
 # backend/app/config/settings.py -> config -> app -> backend -> <repo root>
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
-    """进程级配置。字段默认值面向阶段 0 的本地可运行形态（SQLite + eager Celery）。"""
+    """进程级配置。默认值面向「安装即用」：无需 Redis、无需手工建目录即可启动。"""
 
     model_config = SettingsConfigDict(
         env_prefix="QFORGE_",
-        env_file=str(REPO_ROOT / ".env"),
+        env_file=str(config_file()),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -37,7 +40,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # ---- 存储（SPEC 14.2）----
-    storage_root: Path = REPO_ROOT / "storage"
+    # 默认自动适配运行形态：仓库检出用 <repo>/storage，pip 安装用用户数据目录（见 app/paths.py）
+    storage_root: Path = Field(default_factory=data_root)
+
+    # ---- 已构建的前端静态文件（安装即用：由 API 直接托管，运行期不需要 Node）----
+    frontend_dir: Path | None = None
 
     # ---- 数据库（SPEC 14.1）----
     # 未显式配置时由 storage_root 推导 SQLite 文件；阶段 1 接 PostgreSQL 只需设置该变量。
@@ -49,8 +56,9 @@ class Settings(BaseSettings):
     # ---- 任务队列（SPEC 3 / 13）----
     celery_broker_url: str = "redis://127.0.0.1:6379/0"
     celery_result_backend: str = "redis://127.0.0.1:6379/1"
-    # 阶段 0 无 Redis 服务，默认 eager（同步执行）；接入真实 broker 时置 false。
-    celery_task_always_eager: bool = True
+    # 安装即用：默认 **false**（真正走队列，不阻塞 API 请求）。
+    # 无 Redis 时执行方式会自动落到 local（见 app/config/runtime.py），该开关不产生影响。
+    celery_task_always_eager: bool = False
     celery_task_eager_propagates: bool = True
 
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -65,9 +73,9 @@ class Settings(BaseSettings):
     max_concurrent_tasks: int = 1
 
     # ---- 任务执行方式（SPEC 3.1：Web API 不直接执行长任务）----
-    # local：进程内后台线程执行器（阶段 1 无 Redis 时的路径，入队请求立即返回）
-    # celery：投递到真实 broker（接入 Redis 后切换，业务代码无需改动）
-    executor_mode: Literal["local", "celery"] = "local"
+    # auto（默认）：探测到 Redis 就用 celery，否则用进程内后台执行器（见 app/config/runtime.py）
+    # local：强制进程内后台线程执行器；celery：强制投递到 broker
+    executor_mode: Literal["local", "celery", "auto"] = "auto"
 
     # ---- 上传与归档（SPEC 8.2 / 15）----
     allowed_model_extensions: list[str] = [".onnx"]
@@ -109,6 +117,13 @@ class Settings(BaseSettings):
     @property
     def resolved_storage_root(self) -> Path:
         return self.storage_root.resolve()
+
+    @property
+    def resolved_frontend_dir(self) -> Path | None:
+        """已构建的前端目录：显式配置优先，其次自动探测（见 app/paths.py）。"""
+        if self.frontend_dir is not None:
+            return self.frontend_dir if self.frontend_dir.is_dir() else None
+        return frontend_dir()
 
     @property
     def resolved_database_url(self) -> str:
