@@ -7,6 +7,27 @@
 
 ---
 
+## 0. 本机现状（已完成切换）
+
+| 项 | 状态 |
+| --- | --- |
+| Redis | 容器 `qforge-redis-1`（`redis:7.4-alpine`，Redis 7.4.11），compose 中已设 `restart: unless-stopped` → **Docker Desktop 启动后会自动拉起**，不必每次手动 `up` |
+| 配置 | 仓库根 `.env` 已写入 Redis/Celery 相关项（`.env` 不入库） |
+| 验证 | `python tools/redis_switch_check.py --base http://127.0.0.1:8000/api` 通过：入队 **0.41s** 返回、`worker_id=qforge-worker@<主机名>`、**47s SUCCESS** |
+
+日常启动顺序（仓库根，三个终端；也可用 `scripts/` 下的脚本）：
+
+```powershell
+.\scripts\start-api.ps1                  # 1) API      → http://127.0.0.1:8000
+.\scripts\start-worker.ps1               # 2) worker   → 串行；并行用 -Concurrency 2
+cd frontend; npm run dev                 # 3) 前端      → http://127.0.0.1:5173
+```
+
+> 脚本默认用 PATH 里的 `python`；若用 conda 环境，先设 `$env:QFORGE_PYTHON="C:\Users\<你>\.conda\envs\qforge\python.exe"`。
+> 停止：worker 用 Ctrl+C；Redis 用 `docker compose stop redis`（想彻底移除：`docker compose down`）。
+
+---
+
 ## 1. 启动 Redis（用仓库里的 docker-compose）
 
 ```powershell

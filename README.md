@@ -52,19 +52,23 @@ QForge/
 │       ├── schemas/          Pydantic 请求/响应模型
 │       ├── services/         状态机、存储、任务编排、元数据读写
 │       └── api/routes/       REST 路由
-├── workers/                  Celery 应用与任务（阶段 0 为占位实现）
+├── workers/                  Celery 应用与任务（执行真实流水线）
 ├── frontend/                 Vue 3 + Element Plus + Vite
+├── scripts/                  本地启动脚本（API / worker）
+├── tools/                    辅助脚本（合成模型生成、真实模型检查、Redis 切换检查）
 ├── storage/                  运行时任务目录（storage/<task_id>/...，不入库）
 └── tests/                    pytest 用例
 ```
 
 ## 环境要求
 
-阶段 0 的开发环境（版本明细见 [docs/versions.md](docs/versions.md)）：
+开发环境（版本明细见 [docs/versions.md](docs/versions.md)）：
 
 - Python **3.10.21**（conda 环境 `qforge`）
 - Node 24.9.0 / npm 11.16.0
-- 数据库：默认 SQLite（无需外部服务）；Redis / PostgreSQL 可选，见下文
+- 数据库：默认 SQLite（已开启 WAL）
+- **Redis**：本机已通过 Docker 启用（任务队列，见 [docs/redis.md](docs/redis.md)）
+- GPU 工具链：TensorRT 10.16 + CUDA 13 + MSVC 2019 + CMake/Ninja（阶段 1 编译与 Engine 构建需要）
 
 ## 快速开始
 
@@ -93,17 +97,21 @@ python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
 - 文档：http://127.0.0.1:8000/docs
 - 健康检查：http://127.0.0.1:8000/api/health
 
-### 4. 启动 Worker（可选）
+### 4. 启动 Worker
 
-阶段 0 默认 `task_always_eager=true`（无 Redis 时任务在 API 进程内同步执行，用于验证接线）。
-接入真实 Redis 后：
+长任务（量化 / Engine 构建 / 编译 / 运行验证）由 worker 执行，API 只负责接收与查询。
+
+**本机当前已切到 Redis 模式**（`.env` 中 `QFORGE_EXECUTOR_MODE=celery`，Redis 由 `docker compose up -d redis` 启动）：
 
 ```powershell
-$env:QFORGE_CELERY_TASK_ALWAYS_EAGER="false"
-celery -A workers.celery_app:celery_app worker --loglevel=INFO --pool=solo
+.\scripts\start-worker.ps1               # 串行执行
+.\scripts\start-worker.ps1 -Concurrency 2  # 并行（threads 池）
 ```
 
-> Windows 下必须使用 `--pool=solo`（或 `threads`），Celery 的 prefork 池在 Windows 不受支持。
+> Windows 下 Celery 的默认 prefork 池不可用，脚本已自动使用 `solo`（或 `threads`）。
+
+不接 Redis 时（默认 `QFORGE_EXECUTOR_MODE=local`）任务在 API 进程的后台线程中执行，
+无需本步骤，也不会阻塞请求线程（SPEC 3.1）。切换细节见 [docs/redis.md](docs/redis.md)。
 
 ### 5. 启动前端
 
@@ -132,8 +140,9 @@ python -m pytest -m docker -q -s    # 容器：真实 docker build + 容器内�
 | `QFORGE_STORAGE_ROOT` | `<repo>/storage` | 任务存储根目录（SPEC 14.2） |
 | `QFORGE_DATABASE_URL` | 空 → `storage/qforge.db` | 留空即 SQLite；阶段 1 切 `postgresql+psycopg://...` |
 | `QFORGE_AUTO_CREATE_SCHEMA` | `true` | 启动时按元数据建表（本地便捷）；正式 schema 变更走 Alembic |
-| `QFORGE_CELERY_TASK_ALWAYS_EAGER` | `true` | 阶段 0 无 Redis 时同步执行 |
-| `QFORGE_CELERY_BROKER_URL` | `redis://127.0.0.1:6379/0` | 真实 broker |
+| `QFORGE_EXECUTOR_MODE` | `local` | `local`（API 进程内后台线程）或 `celery`（投递到 Redis，本机已启用） |
+| `QFORGE_CELERY_TASK_ALWAYS_EAGER` | `true` | 必须为 `false` 才真正走队列；本机 `.env` 已设为 `false` |
+| `QFORGE_CELERY_BROKER_URL` | `redis://127.0.0.1:6379/0` | 任务队列 |
 | `QFORGE_CELERY_RESULT_BACKEND` | `redis://127.0.0.1:6379/1` | 结果后端 |
 | `QFORGE_MAX_UPLOAD_MB` / `QFORGE_MAX_ZIP_*` | 见 .env.example | SPEC 15 资源与安全限制（阶段 1 起强制执行） |
 | `QFORGE_TASK_TIMEOUT_SECONDS` | `3600` | 任务超时上限（已用于 Celery `task_time_limit`） |
