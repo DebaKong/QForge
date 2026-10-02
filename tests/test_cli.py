@@ -121,6 +121,9 @@ def test_app_root_is_never_404(client: TestClient) -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert client.get("/api/health").status_code == 200
+    # 接口文档与 OpenAPI 也必须在 /api 命名空间下可达（横幅里承诺的地址要真的能开）
+    assert client.get("/api/docs").status_code == 200
+    assert client.get("/api/openapi.json").status_code == 200
 
 
 # --------------------------------------------------------------------------- #

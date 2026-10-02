@@ -64,7 +64,11 @@ def test_unhandled_exception_envelope(lenient_client: TestClient) -> None:
 
 
 def test_openapi_document_is_available(client: TestClient) -> None:
-    document = client.get("/openapi.json").json()
+    from app.main import app
+
+    # 用应用自身配置的地址，避免把「文档挂在哪个前缀下」写死进测试
+    assert app.openapi_url is not None
+    document = client.get(app.openapi_url).json()
     paths = set(document["paths"])
     for expected in (
         "/api/health",

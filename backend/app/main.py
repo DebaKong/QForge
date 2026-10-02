@@ -82,6 +82,10 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         description="ONNX 自动化量化部署平台 API（SPEC.md V1.0；当前实现阶段：阶段 1）",
         lifespan=lifespan,
+        # 统一放在 /api 命名空间下：根路径留给前端界面，避免前端路由与文档页互相遮蔽
+        docs_url=f"{settings.api_prefix}/docs",
+        redoc_url=f"{settings.api_prefix}/redoc",
+        openapi_url=f"{settings.api_prefix}/openapi.json",
     )
 
     app.add_middleware(
