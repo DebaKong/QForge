@@ -484,24 +484,28 @@ def cmd_worker(args: argparse.Namespace) -> int:
 
 
 def cmd_build_frontend(args: argparse.Namespace) -> int:
-    root = project_root()
-    if root is None:
-        print("未找到前端源码（当前不是仓库检出）。")
-        print("已安装形态下请把构建产物放到数据目录同级的 web/ 目录：<数据目录>/../web")
+    source = Path(args.source).expanduser() if args.source else None
+    if source is None:
+        root = project_root()
+        source = (root / "frontend") if root is not None else None
+
+    if source is None or not (source / "package.json").is_file():
+        print("未找到前端源码目录。")
+        print("已安装形态请显式指定源码位置：")
+        print("    qforge build-frontend --source <仓库>\\frontend --publish")
         return 1
 
-    frontend = root / "frontend"
     npm = shutil.which("npm")
     if npm is None:
         print(f"未找到 npm。{NODE_HINT}")
         return 1
 
-    install_cmd = ["npm", "ci"] if (frontend / "package-lock.json").exists() else ["npm", "install"]
+    install_cmd = ["npm", "ci"] if (source / "package-lock.json").exists() else ["npm", "install"]
     for command in (install_cmd, ["npm", "run", "build"]):
         print(f"$ {' '.join(command)}")
         result = subprocess.run(
             command,
-            cwd=str(frontend),
+            cwd=str(source),
             env=_child_env(),
             shell=(os.name == "nt"),  # Windows 上 npm 是 .cmd，需要 shell 解析
             check=False,
@@ -509,8 +513,55 @@ def cmd_build_frontend(args: argparse.Namespace) -> int:
         if result.returncode != 0:
             print(f"命令失败（退出码 {result.returncode}）：{' '.join(command)}")
             return result.returncode
-    print(f"前端已构建：{frontend / 'dist'}")
+
+    dist = source / "dist"
+    print(f"前端已构建：{dist}")
+
+    if args.publish:
+        target = data_root().parent / "web"
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(dist, target)
+        print(f"已发布到：{target}（服务启动后由 API 直接托管，运行期不需要 Node）")
+
     print("重新启动服务即可直接打开界面（qforge serve --open）")
+    return 0
+
+
+def cmd_fetch_cuda_headers(args: argparse.Namespace) -> int:
+    """自动下载 CUDA 运行时开发文件（公开源、无需登录）。
+
+    只服务「编译生成的 C++ 工程」这一步；核心流程（Engine 构建/推理/精度）不需要它，
+    因此失败时**不视为致命**，只如实报告。
+    """
+    from app.services import cuda_redist
+
+    target = Path(args.dest) if args.dest else (data_root().parent / "toolchain" / "cuda")
+    try:
+        planned = cuda_redist.install(
+            target,
+            version=args.cuda_version,
+            key=args.platform,
+            dry_run=args.dry_run,
+        )
+    except Exception as exc:  # noqa: BLE001 - 网络/清单异常都要如实报出来
+        print(f"获取 CUDA 文件失败：{type(exc).__name__}: {exc}")
+        print("这不影响核心流程：只有「编译生成的 C++ 工程」需要 CUDA 头文件。")
+        return 1
+
+    print(f"CUDA 清单版本：{args.cuda_version}   平台：{args.platform or cuda_redist.platform_key()}")
+    print(f"目标目录    ：{target}")
+    for component in planned:
+        size = f"{component.size_bytes / 1024**2:.1f} MB" if component.size_bytes else "大小未知"
+        action = "待下载" if args.dry_run else "已解压"
+        print(f"  [{action}] {component.name:12s} {component.filename}（{size}）")
+    if not planned:
+        print("清单里没有找到需要的组件（检查 --cuda-version 与 --platform）")
+        return 1
+    if args.dry_run:
+        print("这是 --dry-run：没有下载任何文件。去掉该参数即开始下载并解压。")
+    else:
+        print("完成：编译生成的 C++ 工程时会自动在该目录下查找 CUDA 头文件。")
     return 0
 
 
@@ -565,7 +616,23 @@ def build_parser() -> argparse.ArgumentParser:
     worker.set_defaults(func=cmd_worker)
 
     frontend = subparsers.add_parser("build-frontend", help="构建前端界面（需要 Node.js）")
+    frontend.add_argument("--source", default=None, help="前端源码目录（安装形态下由安装脚本传入）")
+    frontend.add_argument(
+        "--publish",
+        action="store_true",
+        help="构建后发布到 <数据目录>/../web（安装形态下由 API 直接托管）",
+    )
     frontend.set_defaults(func=cmd_build_frontend)
+
+    cuda = subparsers.add_parser(
+        "fetch-cuda-headers",
+        help="自动下载 CUDA 运行时开发文件（无需登录；用于编译生成的 C++ 工程）",
+    )
+    cuda.add_argument("--dest", default=None, help="解压目标目录（默认 <数据目录>/../toolchain/cuda）")
+    cuda.add_argument("--cuda-version", default="13.0.0", help="CUDA redist 清单版本，如 13.0.0")
+    cuda.add_argument("--platform", default=None, help="平台键（默认按本机推断，如 windows-x86_64）")
+    cuda.add_argument("--dry-run", action="store_true", help="只解析清单并打印将要下载的内容")
+    cuda.set_defaults(func=cmd_fetch_cuda_headers)
 
     version = subparsers.add_parser("version", help="版本与关键路径")
     version.set_defaults(func=cmd_version)

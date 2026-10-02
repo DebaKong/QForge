@@ -27,3 +27,11 @@
    - 每个阶段汇报必须包含「新机器从零到能用需要几步」这一数字（当前基线与方案见 `docs/portable.md`）。
 2. **不留垃圾**：任务、测试、构建产生的中间产物与缓存一律不入库，并在交付/汇报时清理；
    单个任务的磁盘占用必须有上限意识（例：曾因无差别复制 TensorRT DLL 导致每个任务多占 2.27 GB，已修）。
+
+## 工程环境注意事项（本机实测，写脚本前先看这里）
+
+- **含中文的 `.ps1` 保存为 UTF-8 带 BOM**：Windows PowerShell 5.1 会把无 BOM 的 UTF-8 脚本按系统
+  ANSI(GBK) 读取，中文被打乱后会直接造成语法错误（`scripts/install.ps1` 首次运行即因此失败）。
+  `tests/test_cli.py::test_powershell_scripts_are_utf8_with_bom` 是这条的守卫用例。
+- **本机默认 shell 是 Windows PowerShell 5.1**：没有三元运算符 `? :`、没有 `??`、`-Encoding UTF8`
+  写出的是带 BOM 的 UTF-8。

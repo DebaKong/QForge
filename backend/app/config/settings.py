@@ -96,11 +96,12 @@ class Settings(BaseSettings):
     calibration_cache_filename: str = "calibration.cache"
 
     # ---- C++ 构建所需的开发文件（阶段 1 实测：pip 只提供运行库 DLL）----
-    # 留空则自动探测常见位置（含 D:\qforge-toolchain 下的 TensorRT/CUDA 分发包）；
+    # 留空则自动探测常见位置（含数据目录下的 toolchain/，安装脚本会把 CUDA 头文件放这里）；
     # 指向包含 include/ 与 lib/ 的目录。
     tensorrt_root: Path | None = None
     cuda_root: Path | None = None
     toolchain_search_roots: list[Path] = [
+        data_root().parent / "toolchain",  # 安装脚本自动下载的 CUDA 文件放在这里
         Path("D:/qforge-toolchain"),
         Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA"),
     ]

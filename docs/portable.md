@@ -79,3 +79,32 @@
 | 自动下载 CUDA 头文件 | 依赖 NVIDIA 公共分发站可达 | 不可达时降级：跳过编译验证并明确提示（不伪造成功） |
 | 首次运行生成 `.env` | 可能与用户已有配置冲突 | 只在文件不存在时生成，且打印生成的路径与内容摘要 |
 | 一键启动器与现有 `.env`（celery 模式） | 两套启动方式可能不一致 | 启动器读取同一份 `.env`；`qforge doctor` 显示实际生效的执行方式 |
+
+## 5. 进度（滚动更新）
+
+### 已完成并实测
+
+| 工作项 | 状态 | 证据 |
+| --- | --- | --- |
+| 后端可安装包 + `qforge` 命令 | 完成 | `pip install -e .` 后 `qforge version/doctor` 可用 |
+| `qforge doctor` 环境体检 | 完成 | 逐项给出缺失与安装命令；必需项缺失时退出码 1 |
+| `qforge serve` 一条命令启动 | 完成 | 自动选执行方式 + 自动带起 worker + 可选开浏览器；实测界面/文档/404 语义均正确 |
+| 前端由 API 托管（运行期不需要 Node） | 完成 | `qforge build-frontend` 构建后 `GET /` 返回真实界面，深链接回退 200 |
+| 执行方式自动（无 Redis 也能跑） | 完成 | `QFORGE_EXECUTOR_MODE=auto` 默认值；探测到 Redis 自动走 Celery |
+| 数据/配置路径自动适配 | 完成 | 仓库检出用 `<repo>/storage`，安装形态用 `%LOCALAPPDATA%\QForge` |
+| CUDA 开发文件自动获取（免登录） | 完成 | `qforge fetch-cuda-headers` 实测下载 3 个分发包并解压出 `cuda_runtime_api.h`/`crt/host_defines.h` |
+| `scripts/install.ps1` 一键安装 | 完成 | 找 Python → 建 venv → 装依赖 → CUDA → 初始化 →（有 Node 就）构建前端 → 体检 |
+| `QForge.bat` 双击启动 | 完成 | 优先用 `.venv`，否则用 PATH 上的 `qforge`；未安装时给出安装命令 |
+| README 改为「两条命令」 | 完成 | 快速开始、可选能力表、环境要求均已重写 |
+
+### 剩余
+
+| 工作项 | 说明 |
+| --- | --- |
+| Linux/macOS 安装脚本（`install.sh`） | 应用代码本身跨平台；但 GPU 探测与编译链目前按 Windows 验证 |
+| 把 Alembic 迁移打包进 CLI | 安装形态目前靠 `create_all` 建表，跨版本升级表结构仍需开发路径 |
+| 前端构建产物是否随包分发 | 决定「新机器是否完全不需要 Node」——待用户确认 |
+| 干净机器全流程验证 | 已在全新 venv 中执行 `install.ps1` 验证（结果见提交记录） |
+
+**步骤数：12 → 3**（装 NVIDIA 驱动 → `install.ps1` → `QForge.bat`）；
+需要「编译生成的 C++ 工程」时 +1 步（TensorRT 开发包，需 NVIDIA 账号登录）。

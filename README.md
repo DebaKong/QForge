@@ -62,66 +62,72 @@ QForge/
 
 ## 环境要求
 
-开发环境（版本明细见 [docs/versions.md](docs/versions.md)）：
+- **必需**：Windows 10/11 + NVIDIA 显卡驱动（平台为你的 GPU 构建 Engine）
+- **安装脚本会处理**：Python 3.10、依赖包、CUDA 运行时开发文件、数据目录、数据库表
+- **可选**：Node.js（构建前端界面）、Docker（容器镜像 / Redis）、Visual Studio + TensorRT 开发包（C++ 编译验证）
+- 数据库默认 SQLite（已开启 WAL），无需外部服务
+- 版本矩阵与已锁定组件见 [docs/versions.md](docs/versions.md)
 
-- Python **3.10.21**（conda 环境 `qforge`）
-- Node 24.9.0 / npm 11.16.0
-- 数据库：默认 SQLite（已开启 WAL）
-- **Redis**：本机已通过 Docker 启用（任务队列，见 [docs/redis.md](docs/redis.md)）
-- GPU 工具链：TensorRT 10.16 + CUDA 13 + MSVC 2019 + CMake/Ninja（阶段 1 编译与 Engine 构建需要）
+> 新机器从零到能用的步骤数：**改造前 12 步 → 现在 3 步**（装驱动 → `install.ps1` → `QForge.bat`）。
+> 方案与演进记录见 [docs/portable.md](docs/portable.md)。
 
-## 快速开始
+## 快速开始（安装即用）
 
-### 1. Python 环境
+新机器上只需要三步：
+
+```powershell
+# 1) 安装：自动建虚拟环境 → 装依赖 → 下载 CUDA 开发文件（公开源，无需登录）
+#          → 初始化数据目录 → 尽力构建前端界面 → 环境体检
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+
+# 2) 启动：界面 + API + worker 一起起来，并自动打开浏览器
+.\QForge.bat
+```
+
+也可以直接用 `qforge` 命令：`qforge serve --open`。
+
+**不需要 Redis**：没有 Redis 时自动使用进程内执行器；若本机有 Redis（例如
+`docker compose up -d redis`），启动时自动切换为队列模式并带起 worker。
+
+**运行期不需要 Node.js**：已构建的前端由 API 直接托管（`install.ps1` 会在检测到 Node 时构建，
+没有 Node 则界面显示一张说明页，API 全部可用）。
+
+唯一无法自动化的前提是 **NVIDIA 显卡驱动**（平台要为你的 GPU 构建 Engine）。
+用 `qforge doctor` 可以看到本机还缺什么、以及每条缺失项的安装命令。
+
+### 常用命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `qforge doctor` | 环境体检：逐项给出「有什么/缺什么/怎么补」 |
+| `qforge serve --open` | 启动服务（自动选择执行方式、自动带起 worker、自动开浏览器） |
+| `qforge init` | 建数据目录与数据库表（首次 `serve` 也会自动完成） |
+| `qforge build-frontend` | 构建前端界面（需要 Node.js） |
+| `qforge fetch-cuda-headers` | 自动下载 CUDA 运行时开发文件（无需登录；`--dry-run` 只看不下载） |
+| `qforge worker` | 单独启动 Celery worker |
+| `qforge version` | 版本与关键路径 |
+
+### 可选能力（缺了也能跑核心流程）
+
+| 能力 | 额外需要 | 缺了会怎样 |
+| --- | --- | --- |
+| 编译「生成的 C++ 工程」 | TensorRT **开发包**（需 NVIDIA 账号登录）+ MSVC | 报告里标 `cpp_verification: BLOCKED`，其余流程照常 |
+| 生成容器镜像 | Docker Desktop + TensorRT 基础镜像（16.7 GB） | 任务配置 `build.docker_build=true` 时才需要 |
+| Redis 队列 / 独立 worker | Docker 或本机 Redis | 自动退回进程内执行器，功能不变 |
+| 前端热更新开发 | Node.js | 只用构建好的界面即可 |
+
+### 从源码开发（可选，与原流程一致）
 
 ```powershell
 conda create -y -n qforge python=3.10 pip
 conda activate qforge
 pip install -r backend/requirements.txt -r backend/requirements-dev.txt
-```
-
-### 2. 初始化数据库
-
-```powershell
-# 默认库：storage/qforge.db（SQLite）
 alembic -c backend/alembic.ini upgrade head
 ```
 
-### 3. 启动 API
+前端开发服务器：`cd frontend; npm install; npm run dev`（http://127.0.0.1:5173，`/api` 代理到 8000）。
 
-```powershell
-# 在仓库根执行
-python -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000
-```
-
-- 文档：http://127.0.0.1:8000/docs
-- 健康检查：http://127.0.0.1:8000/api/health
-
-### 4. 启动 Worker
-
-长任务（量化 / Engine 构建 / 编译 / 运行验证）由 worker 执行，API 只负责接收与查询。
-
-**本机当前已切到 Redis 模式**（`.env` 中 `QFORGE_EXECUTOR_MODE=celery`，Redis 由 `docker compose up -d redis` 启动）：
-
-```powershell
-.\scripts\start-worker.ps1               # 串行执行
-.\scripts\start-worker.ps1 -Concurrency 2  # 并行（threads 池）
-```
-
-> Windows 下 Celery 的默认 prefork 池不可用，脚本已自动使用 `solo`（或 `threads`）。
-
-不接 Redis 时（默认 `QFORGE_EXECUTOR_MODE=local`）任务在 API 进程的后台线程中执行，
-无需本步骤，也不会阻塞请求线程（SPEC 3.1）。切换细节见 [docs/redis.md](docs/redis.md)。
-
-### 5. 启动前端
-
-```powershell
-cd frontend
-npm install
-npm run dev      # http://127.0.0.1:5173，/api 自动代理到 127.0.0.1:8000
-```
-
-### 6. 运行测试
+### 运行测试
 
 ```powershell
 # 必须在仓库根执行（pytest 的 pythonpath 由 pyproject.toml 提供）

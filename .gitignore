@@ -72,6 +72,9 @@ pnpm-debug.log*
 secrets/
 credentials/
 
+# ---------- 本地工具链（qforge fetch-cuda-headers 在仓库检出模式下会写到这里） ----------
+toolchain/
+
 # ---------- Python 打包产物（pip install . / 构建 wheel） ----------
 # 安装即用路径会执行 pip install，这些是构建副产物，不入库
 *.egg-info/

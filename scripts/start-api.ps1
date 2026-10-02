@@ -1,9 +1,13 @@
-# 启动 API（读取仓库根的 .env；默认 http://127.0.0.1:8000）
+﻿# 启动 API（读取仓库根的 .env；默认 http://127.0.0.1:8000）
 #
 # 用法（仓库根）：  .\scripts\start-api.ps1
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 Set-Location $repo
+
+# 中文输出编码：子进程写 UTF-8，父进程也按 UTF-8 解码（否则 GBK 控制台下乱码）
+$env:PYTHONIOENCODING = "utf-8"
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 $python = if ($env:QFORGE_PYTHON) { $env:QFORGE_PYTHON } else { "python" }
 Write-Host "启动 API：$repo（python=$python）" -ForegroundColor Cyan

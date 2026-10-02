@@ -127,6 +127,118 @@ def test_app_root_is_never_404(client: TestClient) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# CUDA 开发文件自动获取（公开源）
+# --------------------------------------------------------------------------- #
+def test_cuda_redist_plan_selects_platform_entries() -> None:
+    from app.services import cuda_redist
+
+    manifest = {
+        # 实测形态：平台项是字典，且 size 是字符串
+        "cuda_cudart": {
+            "windows-x86_64": {"relative_path": "cuda_cudart/windows-x86_64/x.zip", "size": "1048576"},
+            "linux-x86_64": {"relative_path": "cuda_cudart/linux-x86_64/x.tar.xz", "size": "1048576"},
+        },
+        # 兼容形态：平台项是列表
+        "cuda_crt": {"windows-x86_64": [{"relative_path": "cuda_crt/windows-x86_64/y.zip"}]},
+    }
+
+    planned = cuda_redist.plan_components(manifest, key="windows-x86_64")
+    assert [item.name for item in planned] == ["cuda_cudart", "cuda_crt"]
+    assert planned[0].filename == "x.zip"
+    assert planned[0].archive_kind == "zip"
+    assert planned[0].size_bytes == 1048576  # 字符串 size 必须被转成整数
+    assert planned[0].url.startswith("https://developer.download.nvidia.com/")
+
+    linux = cuda_redist.plan_components(manifest, key="linux-x86_64")
+    assert [item.archive_kind for item in linux] == ["tar"]
+
+
+def test_cuda_redist_rejects_path_traversal(tmp_path: Path) -> None:
+    """解压前必须过滤越界成员（AGENTS.md：一律防路径穿越）。"""
+    from app.services.cuda_redist import _safe_members
+
+    safe = _safe_members(["include/ok.h", "../evil.h", "a/../../b.h"], tmp_path)
+    assert safe == ["include/ok.h"]
+
+
+def test_cuda_fetch_dry_run_does_not_download(monkeypatch, capsys, tmp_path: Path) -> None:
+    from app.services import cuda_redist
+
+    manifest = {
+        "cuda_cudart": {
+            "windows-x86_64": {
+                "relative_path": "cuda_cudart/windows-x86_64/x.zip",
+                "size": 1048576,
+            }
+        }
+    }
+    monkeypatch.setattr(cuda_redist, "fetch_manifest", lambda *a, **k: manifest)
+
+    code = main(
+        ["fetch-cuda-headers", "--dry-run", "--platform", "windows-x86_64", "--dest", str(tmp_path)]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "待下载" in out
+    assert "cuda_cudart" in out
+    assert not list(tmp_path.rglob("*.zip")), "--dry-run 不应下载任何文件"
+
+
+def test_build_frontend_publish_copies_dist(monkeypatch, tmp_path: Path, capsys) -> None:
+    """安装形态下 `--source ... --publish` 必须把构建产物发布到 <数据目录>/../web。
+
+    实测背景：安装形态里 `app.paths.project_root()` 返回 None（包在 site-packages），
+    因此不能靠自动探测找前端源码，必须由安装脚本显式传入。
+    """
+    import types
+
+    source = tmp_path / "frontend"
+    (source / "dist").mkdir(parents=True)
+    (source / "dist" / "index.html").write_text("<html>PUBLISHED</html>", encoding="utf-8")
+    (source / "package.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setenv("QFORGE_DATA_DIR", str(tmp_path / "data" / "storage"))
+    monkeypatch.setattr("app.cli.shutil.which", lambda name: "npm" if name == "npm" else None)
+    monkeypatch.setattr(
+        "app.cli.subprocess.run",
+        lambda *a, **k: types.SimpleNamespace(returncode=0),
+    )
+
+    code = main(["build-frontend", "--source", str(source), "--publish"])
+    assert code == 0, capsys.readouterr().out
+    published = tmp_path / "data" / "web" / "index.html"
+    assert published.is_file(), "构建产物必须被发布到 <数据目录>/../web"
+    assert "PUBLISHED" in published.read_text(encoding="utf-8")
+
+
+def test_build_frontend_without_source_reports_how(monkeypatch, tmp_path: Path, capsys) -> None:
+    monkeypatch.setattr("app.cli.project_root", lambda: None)
+    code = main(["build-frontend"])
+    out = capsys.readouterr().out
+    assert code == 1
+    assert "--source" in out, "必须告诉用户怎么指定前端源码目录"
+
+
+# --------------------------------------------------------------------------- #
+# 脚本编码（真实踩过的坑）
+# --------------------------------------------------------------------------- #
+def test_powershell_scripts_are_utf8_with_bom() -> None:
+    """含中文的 .ps1 必须带 UTF-8 BOM。
+
+    实测：Windows PowerShell 5.1 会把无 BOM 的 UTF-8 脚本按系统 ANSI（GBK）读取，
+    中文被打乱后会**直接导致语法错误**（install.ps1 首次运行就是这样失败的）。
+    """
+    scripts = sorted((REPO_ROOT / "scripts").glob("*.ps1"))
+    assert scripts, "scripts/ 下应当有 PowerShell 脚本"
+    for path in scripts:
+        raw = path.read_bytes()
+        body = raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw
+        if body.isascii():
+            continue
+        assert raw.startswith(b"\xef\xbb\xbf"), f"{path.name} 含非 ASCII 字符但缺少 UTF-8 BOM"
+
+
+# --------------------------------------------------------------------------- #
 # 依赖声明防漂移
 # --------------------------------------------------------------------------- #
 def test_dependency_pins_match_requirements() -> None:
