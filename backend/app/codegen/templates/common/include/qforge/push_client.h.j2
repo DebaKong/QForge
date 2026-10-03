@@ -1,0 +1,40 @@
+// 生成文件：把推理结果推送给其它系统（公共推理底座）
+//
+// 支持三种推送方式（都用原生 socket 实现，**不引入任何第三方库**）：
+//   http://host:port/path   —— HTTP POST，body 为 JSON（最通用：任何 Web 服务/网关都能收）
+//   tcp://host:port         —— 建连接后发一行 JSON（接收方按行解析，最简单）
+//   udp://host:port         —— 单个 JSON 数据报（最低延迟，不保证送达）
+//
+// 设计约定：
+// - 推送失败**不会让推理中断**：只累计失败次数并记录最后一次错误（实时场景下不能因为
+//   网络抖动丢帧）；
+// - 每次推送都有短超时，避免接收方卡住时拖慢推理循环。
+#pragma once
+
+#include <string>
+
+namespace qforge {
+
+struct PushTarget {
+  std::string scheme;  // http / tcp / udp
+  std::string host;
+  int port = 0;
+  std::string path = "/";  // 仅 http 使用
+};
+
+struct PushStats {
+  int sent = 0;
+  int failed = 0;
+  std::string last_error;
+};
+
+/// 解析推送地址；失败时把原因写入 error
+bool parse_push_url(const std::string& url, PushTarget& target, std::string& error);
+
+/// 推送一行 JSON；失败返回 false 并写入 error（调用方只记统计，不中断推理）
+bool push_json(const PushTarget& target, const std::string& payload, std::string& error);
+
+/// 目标的可读描述（用于日志/结果 JSON）
+std::string describe_target(const PushTarget& target);
+
+}  // namespace qforge

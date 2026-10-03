@@ -101,10 +101,54 @@ add_executable(qforge_detector
   src/preprocess.cpp
   src/detector.cpp
   src/yolov8_decoder.cpp
+  src/frame_source.cpp
+  src/push_client.cpp
 )
 
 target_include_directories(qforge_detector PRIVATE ${QFORGE_INCLUDE_DIRS})
 target_link_libraries(qforge_detector PRIVATE ${QFORGE_TRT_LINK} ${QFORGE_CUDA_LINK})
+
+# 结果推送用原生 socket：Windows 需要链接 ws2_32（Linux 无需额外库）
+if(WIN32)
+  target_link_libraries(qforge_detector PRIVATE ws2_32)
+endif()
+
+# ---- 可选：OpenCV（摄像头 / 视频文件 / 预览窗口）----
+# 默认关闭以保持「零第三方依赖」；需要实时摄像头时用 -DQFORGE_WITH_OPENCV=ON 重新构建。
+#
+# 两种注入方式：
+#   1) -DQFORGE_OPENCV_ROOT=<含 include/ 与 lib/ 的目录>：直接使用（平台/conda 场景，最省事，
+#      也避免 find_package 因编译器版本（vc16 vs vc17）拒绝；
+#   2) 不提供 ROOT 时用 find_package(OpenCV) 自动查找系统安装。
+option(QFORGE_WITH_OPENCV "启用 OpenCV 支持（--camera / --video / --display）" OFF)
+set(QFORGE_OPENCV_ROOT "" CACHE PATH "OpenCV 根目录（含 include/ 与 lib/）")
+if(QFORGE_WITH_OPENCV)
+  target_compile_definitions(qforge_detector PRIVATE QFORGE_WITH_OPENCV)
+  if(QFORGE_OPENCV_ROOT)
+    set(OpenCV_INCLUDE_DIRS "${QFORGE_OPENCV_ROOT}/include")
+    file(GLOB QFORGE_OPENCV_LIBS
+      "${QFORGE_OPENCV_ROOT}/lib/opencv_world*.lib"
+      "${QFORGE_OPENCV_ROOT}/lib/opencv_core*.lib"
+      "${QFORGE_OPENCV_ROOT}/lib/opencv_imgproc*.lib"
+      "${QFORGE_OPENCV_ROOT}/lib/opencv_videoio*.lib"
+      "${QFORGE_OPENCV_ROOT}/lib/opencv_highgui*.lib"
+      "${QFORGE_OPENCV_ROOT}/lib/libopencv_core*.so*"
+      "${QFORGE_OPENCV_ROOT}/lib/libopencv_imgproc*.so*"
+      "${QFORGE_OPENCV_ROOT}/lib/libopencv_videoio*.so*"
+      "${QFORGE_OPENCV_ROOT}/lib/libopencv_highgui*.so*")
+    if(NOT QFORGE_OPENCV_LIBS)
+      message(FATAL_ERROR "QFORGE_OPENCV_ROOT=${QFORGE_OPENCV_ROOT} 下没有找到 OpenCV 库文件")
+    endif()
+    list(REMOVE_DUPLICATES QFORGE_OPENCV_LIBS)
+    message(STATUS "OpenCV（注入）: ${QFORGE_OPENCV_ROOT}")
+  else()
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio highgui)
+    message(STATUS "OpenCV（find_package）: ${OpenCV_VERSION}（${OpenCV_DIR}）")
+    set(QFORGE_OPENCV_LIBS ${OpenCV_LIBS})
+  endif()
+  target_include_directories(qforge_detector PRIVATE ${OpenCV_INCLUDE_DIRS})
+  target_link_libraries(qforge_detector PRIVATE ${QFORGE_OPENCV_LIBS})
+endif()
 
 if(MSVC)
   target_compile_options(qforge_detector PRIVATE /W3 /EHsc /utf-8 /MP)

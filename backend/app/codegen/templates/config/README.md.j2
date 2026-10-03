@@ -122,7 +122,103 @@ cmake --build source/build --parallel
 等变量显式注入，见 `source/README.md`）。编译产物为 `qforge_detector(.exe)`，
 可放回 `bin/` 后继续用 `start.bat` / `start.sh`。
 
-## 八、精度与一致性（重要）
+## 八、实时模式：摄像头（或视频文件）+ 把检测结果推给别的系统
+
+> 前提：产物里的可执行文件要**带 OpenCV 支持**（构建时加 `-DQFORGE_WITH_OPENCV=ON`；
+> 平台构建任务时勾选「实时推理」会自动带上）。没带 OpenCV 时仍可用本节最后的
+> `--stdin-frames` 方案（零依赖）。
+
+### 一键启动
+
+```bat
+:: Windows：用摄像头 0，每帧把结果 POST 给 127.0.0.1:9000（第二个参数=每 N 帧推一次）
+start_camera.bat http://127.0.0.1:9000/events 1
+:: 想看窗口预览：编辑 start_camera.bat 最后一行，加上 --display
+```
+```bash
+./start_camera.sh tcp://127.0.0.1:9100 1
+```
+
+### 手动调用（参数一览）
+
+| 参数 | 说明 |
+| --- | --- |
+| `--camera <索引或地址>` | 摄像头（`0`、`1`…）或 OpenCV 支持的流地址（如 `rtsp://…`） |
+| `--video <文件>` | 用视频文件代替摄像头（便于离线验证整条链路） |
+| `--stdin-frames --width W --height H` | 从标准输入读 BGR 裸帧（零依赖，配 ffmpeg 用） |
+| `--display` | 预览窗口（画检测框；按 ESC 停止） |
+| `--max-frames N` | 处理 N 帧后退出（默认一直跑） |
+| `--push <http://host:port/path>` | 每帧结果 **HTTP POST** 出去（最通用） |
+| `--push-tcp <tcp://host:port>` | 每条结果一行 JSON（换行分隔） |
+| `--push-udp <udp://host:port>` | 每个结果一个 UDP 数据报（延迟最低、不保证送达） |
+| `--push-interval N` | 每 N 帧推送一次（降低网络与接收端压力） |
+| `--stats-every N` | 每 N 帧打印一次 FPS / 时延 / 推送统计 |
+
+```bat
+bin\qforge_detector.exe --engine model\model.engine --camera 0 ^
+    --push http://10.0.0.5:8080/events --push-interval 2 --display --stats-every 30
+```
+
+### 推送出去的 JSON
+
+每帧一条，字段与单图模式一致，另加帧信息：
+
+```json
+{"status":"ok","precision":"FP16","architecture":"yolov8","backend":"tensorrt",
+ "input_shape":[1,3,640,640],"output_shape":[1,84,8400],"latency_ms":7.108,
+ "frame_index":42,"timestamp":"2026-10-03T05:11:22Z","frame_width":1280,"frame_height":720,
+ "candidates":3,"detections_count":1,
+ "detections":[{"class_id":0,"score":0.87,"box":[120.5,80.25,300.0,410.75]}]}
+```
+
+- 实时模式下检测框**已还原到原始画面坐标**，接收端可以直接画框；
+- 程序结束时还会输出一条**汇总** JSON：`frames` / `elapsed_seconds` / `fps` /
+  `latency_ms_avg` / `push_sent` / `push_failed`；
+- **推送失败不会中断推理**（实时场景不能因为网络抖动丢帧）：只累计失败次数，结束时打印原因。
+
+### 接收端示例（Python，收 TCP 行）
+
+```python
+import json, socket
+server = socket.socket(); server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("0.0.0.0", 9100)); server.listen(5)
+while True:
+    connection, _ = server.accept()
+    payload = b""
+    while not payload.endswith(b"\n"):
+        chunk = connection.recv(65536)
+        if not chunk: break
+        payload += chunk
+    print(json.loads(payload.decode("utf-8")))
+    connection.close()
+```
+
+HTTP 模式就是普通 `POST`：`Content-Type: application/json`，body 为上面的 JSON。
+
+### 零依赖替代（产物未启用 OpenCV 时）
+
+```bat
+ffmpeg -f dshow -i video="你的摄像头" -pix_fmt bgr24 -f rawvideo - ^
+  | bin\qforge_detector.exe --engine model\model.engine --stdin-frames --width 640 --height 480 ^
+      --push tcp://127.0.0.1:9100
+```
+```bash
+ffmpeg -f v4l2 -i /dev/video0 -pix_fmt bgr24 -f rawvideo - \
+  | ./bin/qforge_detector --engine model/model.engine --stdin-frames --width 640 --height 480 \
+      --push tcp://127.0.0.1:9100
+```
+
+### 性能参考（yolov8n / FP16 / RTX 5060，本平台实测）
+
+| 场景 | 实测 |
+| --- | --- |
+| 单帧推理（Engine 已加载） | **7–10 ms/帧** → 推理本身有 100+ FPS 的余量 |
+| 每帧重启进程（错误用法） | 约 300 ms/帧 → 上限 ~3 FPS |
+| 实时模式（Engine 只加载一次） | 瓶颈在采集/显示/推送，推理不是瓶颈 |
+
+想给接收端减压：`--push-interval 2`（每 2 帧推一次），或只在 `detections_count > 0` 时推送。
+
+## 九、精度与一致性（重要）
 
 `source/include/qforge/generated_config.h` 与平台 Python 侧的预处理参数**同源**（同一份
 Model Definition 渲染）。若修改分辨率、mean/std 或颜色顺序，**必须同步修改平台侧配置**，

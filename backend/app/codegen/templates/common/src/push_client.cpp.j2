@@ -1,0 +1,217 @@
+// 生成文件：结果推送实现（原生 socket，跨 Windows / Linux）
+#include "qforge/push_client.h"
+
+#include <cstring>
+#include <sstream>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+using socket_t = SOCKET;
+#define QFORGE_INVALID_SOCKET INVALID_SOCKET
+#define QFORGE_CLOSE_SOCKET closesocket
+#else
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+using socket_t = int;
+#define QFORGE_INVALID_SOCKET (-1)
+#define QFORGE_CLOSE_SOCKET close
+#endif
+
+namespace qforge {
+namespace {
+
+constexpr int kTimeoutMs = 1500;  // 单次推送的超时（避免网络卡住拖慢推理循环）
+
+#ifdef _WIN32
+/// Windows 必须先初始化 Winsock；只初始化一次
+bool ensure_winsock(std::string& error) {
+  static bool ready = false;
+  if (ready) return true;
+  WSADATA data;
+  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+    error = "WSAStartup 失败";
+    return false;
+  }
+  ready = true;
+  return true;
+}
+#else
+bool ensure_winsock(std::string&) { return true; }
+#endif
+
+bool connect_to(const PushTarget& target, int type, socket_t& out_socket, std::string& error) {
+  if (!ensure_winsock(error)) return false;
+
+  addrinfo hints{};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = type;
+  addrinfo* result = nullptr;
+  const std::string port_text = std::to_string(target.port);
+  const int resolved = getaddrinfo(target.host.c_str(), port_text.c_str(), &hints, &result);
+  if (resolved != 0 || result == nullptr) {
+    error = "无法解析推送地址 " + target.host + ":" + port_text;
+    return false;
+  }
+
+  socket_t handle = QFORGE_INVALID_SOCKET;
+  for (addrinfo* candidate = result; candidate != nullptr; candidate = candidate->ai_next) {
+    handle = socket(candidate->ai_family, candidate->ai_socktype, candidate->ai_protocol);
+    if (handle == QFORGE_INVALID_SOCKET) continue;
+
+    // 收发都设超时：接收方异常时不能拖住推理
+#ifdef _WIN32
+    DWORD timeout = kTimeoutMs;
+    setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+    setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+    timeval timeout{};
+    timeout.tv_sec = kTimeoutMs / 1000;
+    timeout.tv_usec = (kTimeoutMs % 1000) * 1000;
+    setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
+
+    if (connect(handle, candidate->ai_addr, static_cast<int>(candidate->ai_addrlen)) == 0) {
+      out_socket = handle;
+      freeaddrinfo(result);
+      return true;
+    }
+    QFORGE_CLOSE_SOCKET(handle);
+  }
+
+  freeaddrinfo(result);
+  error = "无法连接 " + target.host + ":" + port_text;
+  return false;
+}
+
+bool send_all(socket_t handle, const std::string& data, std::string& error) {
+  std::size_t offset = 0;
+  while (offset < data.size()) {
+    const int sent = send(handle, data.data() + offset, static_cast<int>(data.size() - offset), 0);
+    if (sent <= 0) {
+      error = "发送失败";
+      return false;
+    }
+    offset += static_cast<std::size_t>(sent);
+  }
+  return true;
+}
+
+std::string http_request(const PushTarget& target, const std::string& payload) {
+  std::ostringstream request;
+  request << "POST " << (target.path.empty() ? "/" : target.path) << " HTTP/1.1\r\n"
+          << "Host: " << target.host << ":" << target.port << "\r\n"
+          << "User-Agent: QForge-Detector/1.0\r\n"
+          << "Content-Type: application/json\r\n"
+          << "Content-Length: " << payload.size() << "\r\n"
+          << "Connection: close\r\n\r\n"
+          << payload;
+  return request.str();
+}
+
+}  // namespace
+
+bool parse_push_url(const std::string& url, PushTarget& target, std::string& error) {
+  const std::size_t scheme_end = url.find("://");
+  if (scheme_end == std::string::npos) {
+    error = "推送地址要带协议前缀，例如 http://127.0.0.1:9000/events 或 tcp://127.0.0.1:9100";
+    return false;
+  }
+  target = PushTarget{};
+  target.scheme = url.substr(0, scheme_end);
+  if (target.scheme != "http" && target.scheme != "tcp" && target.scheme != "udp") {
+    error = "不支持的推送协议：" + target.scheme + "（支持 http / tcp / udp）";
+    return false;
+  }
+
+  std::string rest = url.substr(scheme_end + 3);
+  const std::size_t path_pos = rest.find('/');
+  if (path_pos != std::string::npos) {
+    target.path = rest.substr(path_pos);
+    rest = rest.substr(0, path_pos);
+  }
+  const std::size_t colon = rest.rfind(':');
+  if (colon == std::string::npos) {
+    error = "推送地址要带端口，例如 http://127.0.0.1:9000/events";
+    return false;
+  }
+  target.host = rest.substr(0, colon);
+  try {
+    target.port = std::stoi(rest.substr(colon + 1));
+  } catch (const std::exception&) {
+    error = "端口不是数字：" + rest.substr(colon + 1);
+    return false;
+  }
+  if (target.host.empty() || target.port <= 0 || target.port > 65535) {
+    error = "推送地址不合法：" + url;
+    return false;
+  }
+  if (target.path.empty()) target.path = "/";
+  return true;
+}
+
+bool push_json(const PushTarget& target, const std::string& payload, std::string& error) {
+  if (target.scheme == "udp") {
+    if (!ensure_winsock(error)) return false;
+    socket_t handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (handle == QFORGE_INVALID_SOCKET) {
+      error = "创建 UDP socket 失败";
+      return false;
+    }
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(static_cast<unsigned short>(target.port));
+    if (inet_pton(AF_INET, target.host.c_str(), &address.sin_addr) != 1) {
+      QFORGE_CLOSE_SOCKET(handle);
+      error = "UDP 目前只支持 IPv4 地址：" + target.host;
+      return false;
+    }
+    const int sent = sendto(handle, payload.data(), static_cast<int>(payload.size()), 0,
+                            reinterpret_cast<sockaddr*>(&address), sizeof(address));
+    QFORGE_CLOSE_SOCKET(handle);
+    if (sent <= 0) {
+      error = "UDP 发送失败";
+      return false;
+    }
+    return true;
+  }
+
+  socket_t handle = QFORGE_INVALID_SOCKET;
+  if (!connect_to(target, SOCK_STREAM, handle, error)) return false;
+
+  bool ok = false;
+  if (target.scheme == "http") {
+    const std::string request = http_request(target, payload);
+    if (send_all(handle, request, error)) {
+      // 读回状态行，确认接收方真的收到了（2xx 视为成功）
+      char buffer[128] = {0};
+      const int received = recv(handle, buffer, sizeof(buffer) - 1, 0);
+      if (received <= 0) {
+        error = "推送后没有收到 HTTP 响应";
+      } else {
+        const std::string status(buffer);
+        ok = status.find(" 2") != std::string::npos;
+        if (!ok) error = "接收方返回：" + status.substr(0, status.find("\r\n"));
+      }
+    }
+  } else {  // tcp
+    ok = send_all(handle, payload + "\n", error);
+  }
+
+  QFORGE_CLOSE_SOCKET(handle);
+  return ok;
+}
+
+std::string describe_target(const PushTarget& target) {
+  std::ostringstream text;
+  text << target.scheme << "://" << target.host << ":" << target.port;
+  if (target.scheme == "http") text << target.path;
+  return text.str();
+}
+
+}  // namespace qforge

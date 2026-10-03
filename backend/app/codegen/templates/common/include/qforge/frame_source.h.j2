@@ -1,0 +1,49 @@
+// 生成文件：帧来源（摄像头 / 视频文件 / 标准输入管道）与结果可视化（公共推理底座）
+//
+// 设计：帧源统一产出 `Image`（RGB 交错），因此**预处理、推理、后处理完全复用**，
+// 单图模式与实时模式走的是同一条链路。
+//
+// OpenCV 是**可选**编译能力：
+//   - 用 -DQFORGE_WITH_OPENCV=ON 构建 → 支持 --camera / --video / 窗口预览；
+//   - 不开（默认）→ 仍然可编译可运行，实时模式可用 --stdin-frames 从管道读裸帧
+//     （例如 ffmpeg 采集后管道传入），保持"零第三方依赖"。
+#pragma once
+
+#include <memory>
+#include <string>
+
+#include "qforge/detector.h"
+#include "qforge/image_io.h"
+
+namespace qforge {
+
+struct FrameSourceOptions {
+  std::string camera;          // 摄像头：索引（"0"）或 OpenCV 支持的地址（"rtsp://..."）
+  std::string video;           // 视频文件路径
+  bool stdin_frames = false;   // 从标准输入读裸帧（BGR 交错）
+  int width = 0;               // 期望采集/管道帧宽（0 = 摄像头默认）
+  int height = 0;              // 期望采集/管道帧高（0 = 摄像头默认）
+};
+
+class FrameSource {
+ public:
+  virtual ~FrameSource() = default;
+  /// 读一帧；返回 false 表示结束（视频播完 / 管道关闭）
+  virtual bool read(Image& frame) = 0;
+  virtual std::string describe() const = 0;
+};
+
+/// 本产物编译时是否启用了 OpenCV（决定 --camera/--video/--display 可用）
+bool has_opencv_support();
+
+/// 是否使用了实时帧源（摄像头/视频/管道）
+bool uses_stream(const FrameSourceOptions& options);
+
+/// 创建帧源；失败返回 nullptr 并写入 error（错误信息会给出可执行的建议）
+std::unique_ptr<FrameSource> create_frame_source(const FrameSourceOptions& options,
+                                                 std::string& error);
+
+/// 窗口预览：画出检测框并显示；返回 false 表示用户按了 ESC（调用方应停止循环）
+bool display_frame(const Image& frame, const DetectionResult& result, int delay_ms);
+
+}  // namespace qforge

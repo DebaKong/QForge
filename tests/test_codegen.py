@@ -159,12 +159,31 @@ def test_start_scripts_are_generated_with_correct_line_endings(tmp_path: Path) -
     assert bat.replace(b"\r\n", b"").count(b"\n") == 0, "start.bat 必须是纯 CRLF"
     assert all(byte < 128 for byte in bat), "start.bat 必须是 ASCII（cmd 对 UTF-8 支持差）"
 
+    # 实时模式启动脚本同理（.bat 必须 CRLF+ASCII）
+    camera_bat = (source / "start_camera.bat").read_bytes()
+    assert camera_bat.startswith(b"@echo off")
+    assert camera_bat.replace(b"\r\n", b"").count(b"\n") == 0, "start_camera.bat 必须是纯 CRLF"
+    assert all(byte < 128 for byte in camera_bat), "start_camera.bat 必须是 ASCII"
+    assert b"--push" in camera_bat and b"--camera" in camera_bat
+
     shell = (source / "start.sh").read_bytes()
     assert shell.startswith(b"#!")
     assert b"\r\n" not in shell, "start.sh 必须是 LF"
+    camera_shell = (source / "start_camera.sh").read_bytes()
+    assert camera_shell.startswith(b"#!")
+    assert b"\r\n" not in camera_shell, "start_camera.sh 必须是 LF"
 
     readme = (source / "README.md").read_text(encoding="utf-8")
-    for expected in ("start.bat", "start.sh", "一键启动", "bin/", "model/model.engine"):
+    for expected in (
+        "start.bat",
+        "start.sh",
+        "一键启动",
+        "bin/",
+        "model/model.engine",
+        "实时模式",  # 摄像头 + 推送章节必须存在
+        "--push",
+        "stdin-frames",
+    ):
         assert expected in readme, f"交付说明里应提到 {expected}"
 
 

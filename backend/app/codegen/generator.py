@@ -40,6 +40,11 @@ RENDER_PLAN: tuple[tuple[str, str], ...] = (
     ("common/src/image_io.cpp.j2", "src/image_io.cpp"),
     ("common/include/qforge/preprocess.h.j2", "include/qforge/preprocess.h"),
     ("common/src/preprocess.cpp.j2", "src/preprocess.cpp"),
+    # 实时输入（摄像头/视频/管道，OpenCV 可选）与结果推送（原生 socket）
+    ("common/include/qforge/frame_source.h.j2", "include/qforge/frame_source.h"),
+    ("common/src/frame_source.cpp.j2", "src/frame_source.cpp"),
+    ("common/include/qforge/push_client.h.j2", "include/qforge/push_client.h"),
+    ("common/src/push_client.cpp.j2", "src/push_client.cpp"),
     ("task/detection/src/main.cpp.j2", "src/main.cpp"),
     ("task/detection/include/qforge/detector.h.j2", "include/qforge/detector.h"),
     ("task/detection/src/detector.cpp.j2", "src/detector.cpp"),
@@ -51,6 +56,9 @@ RENDER_PLAN: tuple[tuple[str, str], ...] = (
     # 交付产物根目录的"一键启动"脚本（解压后直接跑）
     ("common/start.bat.j2", "start.bat"),
     ("common/start.sh.j2", "start.sh"),
+    # 实时模式（摄像头/视频 + 推送检测结果）
+    ("common/start_camera.bat.j2", "start_camera.bat"),
+    ("common/start_camera.sh.j2", "start_camera.sh"),
     ("config/test_README.md.j2", "test/README.md"),
 )
 

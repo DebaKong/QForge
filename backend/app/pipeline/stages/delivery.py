@@ -51,7 +51,13 @@ def _copy_tree(
 
 
 # 交付根目录自己用的一键启动文件：只放在根目录，不在 source/ 里重复一份
-_DELIVERY_ROOT_FILES = ("README.md", "start.bat", "start.sh")
+_DELIVERY_ROOT_FILES = (
+    "README.md",
+    "start.bat",
+    "start.sh",
+    "start_camera.bat",
+    "start_camera.sh",
+)
 
 
 def _copy_binary(context: PipelineContext, staging: Path) -> Path | None:

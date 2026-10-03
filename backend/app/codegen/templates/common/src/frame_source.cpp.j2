@@ -1,0 +1,220 @@
+// 生成文件：帧来源实现（OpenCV 可选；标准输入管道始终可用）
+#include "qforge/frame_source.h"
+
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <sstream>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
+#ifdef QFORGE_WITH_OPENCV
+#include <opencv2/opencv.hpp>
+#endif
+
+namespace qforge {
+namespace {
+
+#ifdef QFORGE_WITH_OPENCV
+
+/// 把 OpenCV 的 BGR Mat 转成引擎需要的 RGB Image
+Image mat_to_image(const cv::Mat& bgr) {
+  Image image;
+  image.width = bgr.cols;
+  image.height = bgr.rows;
+  image.channels = 3;
+  image.pixels.resize(static_cast<std::size_t>(bgr.cols) * bgr.rows * 3);
+  cv::Mat rgb;
+  cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
+  std::memcpy(image.pixels.data(), rgb.data, image.pixels.size());
+  return image;
+}
+
+class OpenCvFrameSource : public FrameSource {
+ public:
+  OpenCvFrameSource(cv::VideoCapture capture, std::string description)
+      : capture_(std::move(capture)), description_(std::move(description)) {}
+
+  bool read(Image& frame) override {
+    cv::Mat bgr;
+    if (!capture_.read(bgr) || bgr.empty()) {
+      return false;
+    }
+    frame = mat_to_image(bgr);
+    return true;
+  }
+
+  std::string describe() const override { return description_; }
+
+ private:
+  cv::VideoCapture capture_;
+  std::string description_;
+};
+
+#else
+
+/// 未启用 OpenCV 时，摄像头/视频模式给出**可执行的**建议（而不是一句"不支持"）
+class UnavailableFrameSource : public FrameSource {
+ public:
+  explicit UnavailableFrameSource(std::string reason) : reason_(std::move(reason)) {}
+  bool read(Image&) override { return false; }
+  std::string describe() const override { return reason_; }
+
+ private:
+  std::string reason_;
+};
+
+#endif
+
+/// 从标准输入读裸帧（BGR 交错）：零依赖，可与 ffmpeg 等采集工具配合
+class StdinFrameSource : public FrameSource {
+ public:
+  StdinFrameSource(int width, int height) : width_(width), height_(height) {
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);  // Windows 下必须切二进制，否则换行会被改写
+#endif
+    frame_bytes_ = static_cast<std::size_t>(width_) * height_ * 3;
+  }
+
+  bool read(Image& frame) override {
+    std::vector<unsigned char> buffer(frame_bytes_);
+    std::size_t filled = 0;
+    while (filled < frame_bytes_) {
+      const std::size_t got = std::fread(buffer.data() + filled, 1, frame_bytes_ - filled, stdin);
+      if (got == 0) {
+        return false;  // 管道结束
+      }
+      filled += got;
+    }
+    frame.width = width_;
+    frame.height = height_;
+    frame.channels = 3;
+    frame.pixels.resize(frame_bytes_);
+    // 输入是 BGR，转成引擎需要的 RGB
+    for (std::size_t index = 0; index < frame_bytes_; index += 3) {
+      frame.pixels[index] = buffer[index + 2];
+      frame.pixels[index + 1] = buffer[index + 1];
+      frame.pixels[index + 2] = buffer[index];
+    }
+    return true;
+  }
+
+  std::string describe() const override {
+    std::ostringstream text;
+    text << "stdin " << width_ << "x" << height_ << " BGR 裸帧";
+    return text.str();
+  }
+
+ private:
+  int width_;
+  int height_;
+  std::size_t frame_bytes_ = 0;
+};
+
+}  // namespace
+
+bool has_opencv_support() {
+#ifdef QFORGE_WITH_OPENCV
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool uses_stream(const FrameSourceOptions& options) {
+  return !options.camera.empty() || !options.video.empty() || options.stdin_frames;
+}
+
+std::unique_ptr<FrameSource> create_frame_source(const FrameSourceOptions& options,
+                                                 std::string& error) {
+  if (options.stdin_frames) {
+    if (options.width <= 0 || options.height <= 0) {
+      error = "--stdin-frames 必须同时给出 --width 与 --height（例如 --width 640 --height 480）";
+      return nullptr;
+    }
+    return std::make_unique<StdinFrameSource>(options.width, options.height);
+  }
+
+#ifdef QFORGE_WITH_OPENCV
+  if (!options.camera.empty()) {
+    bool numeric = true;
+    int index = 0;
+    try {
+      index = std::stoi(options.camera);
+    } catch (const std::exception&) {
+      numeric = false;  // 形如 rtsp://... 的地址
+    }
+    cv::VideoCapture capture;
+    if (numeric) {
+#ifdef _WIN32
+      capture.open(index, cv::CAP_DSHOW);  // Windows 上用 DSHOW 打开摄像头更稳
+#else
+      capture.open(index);
+#endif
+    } else {
+      capture.open(options.camera);
+    }
+    if (!capture.isOpened()) {
+      error = "无法打开摄像头/视频流：" + options.camera;
+      return nullptr;
+    }
+    if (options.width > 0 && options.height > 0) {
+      capture.set(cv::CAP_PROP_FRAME_WIDTH, options.width);
+      capture.set(cv::CAP_PROP_FRAME_HEIGHT, options.height);
+    }
+    std::ostringstream text;
+    text << "camera " << options.camera << " (" << static_cast<int>(capture.get(cv::CAP_PROP_FRAME_WIDTH))
+         << "x" << static_cast<int>(capture.get(cv::CAP_PROP_FRAME_HEIGHT)) << ")";
+    return std::make_unique<OpenCvFrameSource>(std::move(capture), text.str());
+  }
+
+  if (!options.video.empty()) {
+    cv::VideoCapture capture(options.video);
+    if (!capture.isOpened()) {
+      error = "无法打开视频文件：" + options.video;
+      return nullptr;
+    }
+    return std::make_unique<OpenCvFrameSource>(std::move(capture), "video " + options.video);
+  }
+#else
+  if (!options.camera.empty() || !options.video.empty()) {
+    error =
+        "本产物未启用 OpenCV 支持，无法使用 --camera/--video。"
+        "可用任一方式：1) 重新构建并加 -DQFORGE_WITH_OPENCV=ON；"
+        "2) 用 --stdin-frames 配合 ffmpeg 采集（见 README 的实时模式章节）";
+    return nullptr;
+  }
+#endif
+
+  error = "未选择任何帧来源";
+  return nullptr;
+}
+
+bool display_frame(const Image& frame, const DetectionResult& result, int delay_ms) {
+#ifdef QFORGE_WITH_OPENCV
+  cv::Mat rgb(frame.height, frame.width, CV_8UC3, const_cast<unsigned char*>(frame.pixels.data()));
+  cv::Mat bgr;
+  cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
+  for (const Detection& detection : result.detections) {
+    cv::rectangle(bgr, cv::Point(static_cast<int>(detection.x1), static_cast<int>(detection.y1)),
+                  cv::Point(static_cast<int>(detection.x2), static_cast<int>(detection.y2)),
+                  cv::Scalar(0, 200, 0), 2);
+    std::ostringstream label;
+    label << "id=" << detection.class_id << " " << static_cast<int>(detection.score * 100) << "%";
+    cv::putText(bgr, label.str(),
+                cv::Point(static_cast<int>(detection.x1), std::max(12, static_cast<int>(detection.y1) - 6)),
+                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 200, 0), 1);
+  }
+  cv::imshow("QForge detection", bgr);
+  return (cv::waitKey(delay_ms) & 0xFF) != 27;  // ESC 退出
+#else
+  (void)frame;
+  (void)result;
+  (void)delay_ms;
+  return true;
+#endif
+}
+
+}  // namespace qforge

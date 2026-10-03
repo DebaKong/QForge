@@ -1,4 +1,9 @@
-// 生成文件：检测程序入口（SPEC 11.3：加载 Engine → 运行样例输入 → 输出结构化结果）
+// 生成文件：检测程序入口
+//
+// 两种用法：
+//   1) 单图/张量模式（默认）：加载 Engine → 处理一张输入 → 输出结构化 JSON → 退出；
+//   2) 实时模式：--camera / --video / --stdin-frames → **Engine 只加载一次**，逐帧推理，
+//      可窗口预览（--display）并把每帧检测结果推送给其它系统（--push / --push-tcp / --push-udp）。
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -12,9 +17,11 @@
 
 #include "qforge/detector.h"
 #include "qforge/engine.h"
+#include "qforge/frame_source.h"
 #include "qforge/generated_config.h"
 #include "qforge/image_io.h"
 #include "qforge/preprocess.h"
+#include "qforge/push_client.h"
 
 namespace {
 
@@ -27,12 +34,29 @@ struct Args {
   int iterations = 1;
   int verbosity = 1;
   bool restore = false;
+  // 实时模式
+  std::string camera;
+  std::string video;
+  bool stdin_frames = false;
+  int width = 0;
+  int height = 0;
+  long long max_frames = 0;
+  bool display = false;
+  std::string push;
+  int push_interval = 1;
+  int stats_every = 30;
 };
 
 void print_usage() {
-  std::cerr << "用法: qforge_detector --engine <model.engine> [--image <input.ppm>] "
-               "[--tensor <input.f32>] [--output <result.json>] [--dump-raw <raw.f32>] "
-               "[--iterations N] [--restore] [--verbose]\n";
+  std::cerr
+      << "用法:\n"
+      << "  单图/张量：qforge_detector --engine <model.engine> [--image <in.ppm>] [--tensor <in.f32>]\n"
+      << "             [--output <result.json>] [--dump-raw <raw.f32>] [--iterations N] [--restore]\n"
+      << "  实时：    qforge_detector --engine <model.engine> (--camera <0|rtsp://...> | --video <file>\n"
+      << "             | --stdin-frames --width W --height H) [--display] [--max-frames N]\n"
+      << "             [--push <http://host:port/path>] [--push-tcp <tcp://host:port>]\n"
+      << "             [--push-udp <udp://host:port>] [--push-interval N] [--stats-every N]\n"
+      << "  --verbose  --help\n";
 }
 
 Args parse_args(int argc, char** argv) {
@@ -57,6 +81,30 @@ Args parse_args(int argc, char** argv) {
       args.dump_raw = next("--dump-raw");
     } else if (flag == "--iterations") {
       args.iterations = std::max(1, std::atoi(next("--iterations").c_str()));
+    } else if (flag == "--camera") {
+      args.camera = next("--camera");
+    } else if (flag == "--video") {
+      args.video = next("--video");
+    } else if (flag == "--stdin-frames") {
+      args.stdin_frames = true;
+    } else if (flag == "--width") {
+      args.width = std::atoi(next("--width").c_str());
+    } else if (flag == "--height") {
+      args.height = std::atoi(next("--height").c_str());
+    } else if (flag == "--max-frames") {
+      args.max_frames = std::atoll(next("--max-frames").c_str());
+    } else if (flag == "--display") {
+      args.display = true;
+    } else if (flag == "--push") {
+      args.push = next("--push");
+    } else if (flag == "--push-tcp") {
+      args.push = next("--push-tcp");
+    } else if (flag == "--push-udp") {
+      args.push = next("--push-udp");
+    } else if (flag == "--push-interval") {
+      args.push_interval = std::max(1, std::atoi(next("--push-interval").c_str()));
+    } else if (flag == "--stats-every") {
+      args.stats_every = std::max(0, std::atoi(next("--stats-every").c_str()));
     } else if (flag == "--restore") {
       args.restore = true;
     } else if (flag == "--verbose") {
@@ -84,6 +132,90 @@ std::string shape_to_json(const nvinfer1::Dims& dims) {
   return stream.str();
 }
 
+std::string detections_to_json(const std::vector<qforge::Detection>& detections) {
+  std::ostringstream json;
+  json << std::fixed << std::setprecision(6);
+  json << "[";
+  for (std::size_t index = 0; index < detections.size(); ++index) {
+    const qforge::Detection& detection = detections[index];
+    if (index > 0) {
+      json << ",";
+    }
+    json << "{\"class_id\":" << detection.class_id << ",\"score\":" << detection.score
+         << ",\"box\":[" << detection.x1 << "," << detection.y1 << "," << detection.x2 << ","
+         << detection.y2 << "]}";
+  }
+  json << "]";
+  return json.str();
+}
+
+/// 结果 JSON：单图模式与实时模式共用（实时模式多几个字段）
+std::string build_payload(const qforge::TrtEngine& engine, const qforge::DetectionResult& result,
+                          double latency_ms, const std::string& extra_fields) {
+  std::ostringstream json;
+  json << std::fixed << std::setprecision(6);
+  json << "{";
+  json << "\"status\":\"ok\",";
+  json << "\"precision\":\"" << qforge::config::kPrecision << "\",";
+  json << "\"architecture\":\"" << qforge::config::kArchitecture << "\",";
+  json << "\"backend\":\"" << qforge::config::kBackendName << "\",";
+  json << "\"input_shape\":" << shape_to_json(engine.input(0).dims) << ",";
+  json << "\"output_shape\":" << shape_to_json(engine.output(0).dims) << ",";
+  json << "\"latency_ms\":" << latency_ms << ",";
+  json << extra_fields;
+  json << "\"candidates\":" << result.candidates << ",";
+  json << "\"detections_count\":" << result.detections.size() << ",";
+  json << "\"detections\":" << detections_to_json(result.detections);
+  json << "}";
+  return json.str();
+}
+
+/// JSON 字符串转义：Windows 路径里的反斜杠必须转义，否则产出的 JSON 非法
+/// （实测：`"source":"video C:\...\x.avi"` 会让接收端 json 解析直接报错）
+std::string json_escape(const std::string& text) {
+  std::string escaped;
+  escaped.reserve(text.size() + 8);
+  for (const char character : text) {
+    switch (character) {
+      case '"':
+        escaped += "\\\"";
+        break;
+      case '\\':
+        escaped += "\\\\";
+        break;
+      case '\n':
+        escaped += "\\n";
+        break;
+      case '\r':
+        escaped += "\\r";
+        break;
+      case '\t':
+        escaped += "\\t";
+        break;
+      default:
+        if (static_cast<unsigned char>(character) >= 0x20) {
+          escaped += character;
+        }
+        break;
+    }
+  }
+  return escaped;
+}
+
+std::string now_iso8601() {
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
+  std::tm utc{};
+#ifdef _WIN32
+  gmtime_s(&utc, &seconds);
+#else
+  gmtime_r(&seconds, &utc);
+#endif
+  std::ostringstream text;
+  text << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
+  return text.str();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -94,8 +226,136 @@ int main(int argc, char** argv) {
       return 2;
     }
 
+    // 推送目标（可选）
+    qforge::PushTarget push_target;
+    if (!args.push.empty()) {
+      std::string error;
+      if (!qforge::parse_push_url(args.push, push_target, error)) {
+        throw std::runtime_error(error);
+      }
+      std::cerr << "[qforge] 结果将推送到 " << qforge::describe_target(push_target) << std::endl;
+    }
+
     qforge::TrtEngine engine(args.engine, args.verbosity);
 
+    const qforge::FrameSourceOptions source_options{args.camera, args.video, args.stdin_frames,
+                                                    args.width, args.height};
+
+    // ------------------------------------------------------------------ //
+    // 实时模式：Engine 只加载一次，逐帧推理（可选预览 + 推送）
+    // ------------------------------------------------------------------ //
+    if (qforge::uses_stream(source_options)) {
+      std::string error;
+      std::unique_ptr<qforge::FrameSource> source =
+          qforge::create_frame_source(source_options, error);
+      if (!source) {
+        throw std::runtime_error(error);
+      }
+      if (args.display && !qforge::has_opencv_support()) {
+        std::cerr << "[qforge][警告] 本产物未启用 OpenCV，--display 不可用（仍会继续推理与推送）"
+                  << std::endl;
+      }
+      std::cerr << "[qforge] 帧来源: " << source->describe() << std::endl;
+
+      qforge::Image frame;
+      if (!source->read(frame)) {
+        throw std::runtime_error("帧来源没有读到任何一帧");
+      }
+      qforge::PreprocessResult prep = qforge::preprocess_image(frame);
+      engine.infer({prep.tensor});  // 预热：首帧包含惰性初始化
+
+      long long frames = 0;
+      double total_ms = 0.0;
+      int pushed = 0;
+      int push_failed = 0;
+      std::string last_push_error;
+      const auto loop_started = std::chrono::steady_clock::now();
+
+      while (args.max_frames <= 0 || frames < args.max_frames) {
+        if (frames > 0 && !source->read(frame)) {
+          break;  // 视频播完 / 管道关闭
+        }
+        prep = qforge::preprocess_image(frame);
+
+        const auto started = std::chrono::steady_clock::now();
+        std::vector<std::vector<float>> outputs = engine.infer({prep.tensor});
+        const auto finished = std::chrono::steady_clock::now();
+        const double latency_ms =
+            std::chrono::duration<double, std::milli>(finished - started).count();
+        total_ms += latency_ms;
+
+        qforge::DetectionResult result = qforge::run_detection(outputs.at(0));
+        // 实时模式下检测框一律还原到原始帧坐标（推送出去的结果才对得上画面）
+        for (qforge::Detection& detection : result.detections) {
+          qforge::restore_box(detection.x1, detection.y1, detection.x2, detection.y2, prep);
+        }
+        ++frames;
+
+        if (args.display && !qforge::display_frame(frame, result, 1)) {
+          std::cerr << "[qforge] 用户按 ESC，停止" << std::endl;
+          break;
+        }
+
+        if (!push_target.scheme.empty() && (frames % args.push_interval == 0)) {
+          std::ostringstream extra;
+          extra << std::fixed << std::setprecision(6);
+          extra << "\"frame_index\":" << (frames - 1) << ",";
+          extra << "\"timestamp\":\"" << now_iso8601() << "\",";
+          extra << "\"frame_width\":" << frame.width << ",";
+          extra << "\"frame_height\":" << frame.height << ",";
+          const std::string payload = build_payload(engine, result, latency_ms, extra.str());
+          std::string push_error;
+          if (qforge::push_json(push_target, payload, push_error)) {
+            ++pushed;
+          } else {
+            ++push_failed;
+            last_push_error = push_error;  // 只记录，不中断推理
+          }
+        }
+
+        if (args.stats_every > 0 && frames % args.stats_every == 0) {
+          const double elapsed_s =
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_started).count();
+          std::cerr << "[qforge] 帧 " << frames << " | 平均 " << std::setprecision(1)
+                    << (frames / std::max(0.001, elapsed_s)) << " FPS | 本帧 " << std::setprecision(2)
+                    << latency_ms << " ms | 推送成功 " << pushed << " 失败 " << push_failed << std::endl;
+        }
+      }
+
+      const double elapsed_s =
+          std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_started).count();
+      std::ostringstream extra;
+      extra << std::fixed << std::setprecision(6);
+      extra << "\"frames\":" << frames << ",";
+      extra << "\"elapsed_seconds\":" << elapsed_s << ",";
+      extra << "\"fps\":" << (frames / std::max(0.001, elapsed_s)) << ",";
+      extra << "\"latency_ms_avg\":" << (frames > 0 ? total_ms / frames : 0.0) << ",";
+      extra << "\"source\":\"" << json_escape(source->describe()) << "\",";
+      extra << "\"push_target\":\""
+            << (push_target.scheme.empty() ? "" : json_escape(qforge::describe_target(push_target)))
+            << "\",";
+      extra << "\"push_sent\":" << pushed << ",";
+      extra << "\"push_failed\":" << push_failed << ",";
+
+      qforge::DetectionResult summary;
+      const std::string payload = build_payload(engine, summary, 0.0, extra.str());
+      std::cout << payload << std::endl;
+      if (!args.output.empty()) {
+        std::ofstream stream(args.output, std::ios::binary);
+        if (!stream) {
+          throw std::runtime_error("无法写入结果文件: " + args.output);
+        }
+        stream << payload;
+      }
+      if (!last_push_error.empty()) {
+        std::cerr << "[qforge][警告] 最后一次推送失败：" << last_push_error << std::endl;
+      }
+      return 0;
+    }
+
+    // ------------------------------------------------------------------ //
+    // 单图 / 张量模式（与之前行为一致）
+    // ------------------------------------------------------------------ //
     std::vector<float> input_data;
     qforge::PreprocessResult prep;
     bool has_preprocess = false;
@@ -108,62 +368,51 @@ int main(int argc, char** argv) {
       has_preprocess = true;
       input_data = prep.tensor;
     } else {
-      throw std::runtime_error("必须提供 --image 或 --tensor 作为样例输入");
+      throw std::runtime_error("必须提供 --image / --tensor，或使用 --camera / --video / --stdin-frames");
     }
 
-    // 预热一次（首个推理包含惰性初始化，不计入时延统计）
-    std::vector<std::vector<float>> outputs = engine.infer({input_data});
+    std::vector<std::vector<float>> outputs = engine.infer({input_data});  // 预热
 
     double total_ms = 0.0;
     for (int iteration = 0; iteration < args.iterations; ++iteration) {
       const auto started = std::chrono::steady_clock::now();
       outputs = engine.infer({input_data});
       const auto finished = std::chrono::steady_clock::now();
-      total_ms +=
-          std::chrono::duration<double, std::milli>(finished - started).count();
+      total_ms += std::chrono::duration<double, std::milli>(finished - started).count();
     }
 
     qforge::DetectionResult result = qforge::run_detection(outputs.at(0));
-
     if (args.restore && has_preprocess) {
       for (qforge::Detection& detection : result.detections) {
         qforge::restore_box(detection.x1, detection.y1, detection.x2, detection.y2, prep);
       }
     }
-
     if (!args.dump_raw.empty()) {
       qforge::save_raw_tensor(args.dump_raw, outputs.at(0));
     }
 
-    std::ostringstream json;
-    json << std::fixed << std::setprecision(6);
-    json << "{";
-    json << "\"status\":\"ok\",";
-    json << "\"precision\":\"" << qforge::config::kPrecision << "\",";
-    json << "\"architecture\":\"" << qforge::config::kArchitecture << "\",";
-    json << "\"backend\":\"" << qforge::config::kBackendName << "\",";
-    json << "\"input_shape\":" << shape_to_json(engine.input(0).dims) << ",";
-    json << "\"output_shape\":" << shape_to_json(engine.output(0).dims) << ",";
-    json << "\"input_elements\":" << engine.input(0).element_count << ",";
-    json << "\"output_elements\":" << engine.output(0).element_count << ",";
-    json << "\"iterations\":" << args.iterations << ",";
-    json << "\"latency_ms_avg\":" << (total_ms / args.iterations) << ",";
-    json << "\"candidates\":" << result.candidates << ",";
-    json << "\"detections_count\":" << result.detections.size() << ",";
-    json << "\"restored\":" << (args.restore && has_preprocess ? "true" : "false") << ",";
-    json << "\"detections\":[";
-    for (std::size_t index = 0; index < result.detections.size(); ++index) {
-      const qforge::Detection& detection = result.detections[index];
-      if (index > 0) {
-        json << ",";
-      }
-      json << "{\"class_id\":" << detection.class_id << ",\"score\":" << detection.score
-           << ",\"box\":[" << detection.x1 << "," << detection.y1 << "," << detection.x2
-           << "," << detection.y2 << "]}";
-    }
-    json << "]}";
+    std::ostringstream extra;
+    extra << std::fixed << std::setprecision(6);
+    extra << "\"iterations\":" << args.iterations << ",";
+    extra << "\"input_elements\":" << engine.input(0).element_count << ",";
+    extra << "\"output_elements\":" << engine.output(0).element_count << ",";
+    extra << "\"restored\":" << (args.restore && has_preprocess ? "true" : "false") << ",";
 
-    const std::string payload = json.str();
+    const std::string payload =
+        build_payload(engine, result, args.iterations > 0 ? total_ms / args.iterations : 0.0, extra.str());
+
+    int pushed = 0;
+    int push_failed = 0;
+    if (!push_target.scheme.empty()) {
+      std::string push_error;
+      if (qforge::push_json(push_target, payload, push_error)) {
+        ++pushed;
+      } else {
+        ++push_failed;
+        std::cerr << "[qforge][警告] 推送失败：" << push_error << std::endl;
+      }
+    }
+
     std::cout << payload << std::endl;
     if (!args.output.empty()) {
       std::ofstream stream(args.output, std::ios::binary);
@@ -171,6 +420,9 @@ int main(int argc, char** argv) {
         throw std::runtime_error("无法写入结果文件: " + args.output);
       }
       stream << payload;
+    }
+    if (!push_target.scheme.empty()) {
+      std::cerr << "[qforge] 推送：" << pushed << " 成功 / " << push_failed << " 失败" << std::endl;
     }
     return 0;
   } catch (const std::exception& error) {

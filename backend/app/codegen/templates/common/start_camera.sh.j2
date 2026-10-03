@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# QForge 实时推理启动（摄像头 + 把检测结果推给别的系统）—— 由 QForge 生成
+#
+#   ./start_camera.sh [推送地址] [每N帧推送一次]
+# 例：
+#   ./start_camera.sh tcp://127.0.0.1:9100 1
+#   ./start_camera.sh http://10.0.0.5:8080/events 5
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+BIN="bin/qforge_detector"
+ENGINE="model/model.engine"
+CAMERA="${QFORGE_CAMERA:-0}"
+PUSH_URL="${1:-http://127.0.0.1:9000/events}"
+PUSH_INTERVAL="${2:-1}"
+
+echo "============================================================"
+echo " QForge 实时推理（{{ model.architecture }} / {{ precision_label }}）"
+echo "============================================================"
+echo
+
+if [ ! -f "$ENGINE" ]; then
+    echo "[失败] 找不到 $ENGINE" >&2
+    exit 1
+fi
+if [ ! -x "$BIN" ]; then
+    echo "[失败] 找不到可执行文件 $BIN，或本产物未包含编译产物" >&2
+    exit 1
+fi
+
+echo "  camera : $CAMERA（可用环境变量 QFORGE_CAMERA 改）"
+echo "  engine : $ENGINE"
+echo "  push   : $PUSH_URL（每 $PUSH_INTERVAL 帧推送一次）"
+echo "  停止   : Ctrl+C；加 --display 可看窗口预览"
+echo
+
+exec "$BIN" --engine "$ENGINE" --camera "$CAMERA" \
+    --push "$PUSH_URL" --push-interval "$PUSH_INTERVAL" --stats-every 30
