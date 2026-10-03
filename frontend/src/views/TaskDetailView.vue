@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api/client'
@@ -45,9 +45,8 @@ async function loadDetail() {
 }
 
 function selectTask(id) {
-  selectedId.value = id
+  // 只改地址，细节由下面的 watch 统一加载（避免重复请求，也保证浏览器前进/后退一致）
   router.push(`/tasks/${id}`)
-  loadDetail()
 }
 
 async function enqueue() {
@@ -70,9 +69,19 @@ async function cancel() {
   loadDetail()
 }
 
+// 列表与详情共用路由（/tasks/:id?），组件会被复用：
+// 必须监听路由参数变化，否则从别处跳进来（或浏览器前进/后退）不会重新加载，要手动刷新。
+watch(
+  () => route.params.id,
+  async (id) => {
+    selectedId.value = id || ''
+    await loadDetail()
+  },
+  { immediate: true },
+)
+
 onMounted(async () => {
   await loadList()
-  await loadDetail()
   timer = setInterval(() => {
     if (autoRefresh.value) loadDetail()
   }, 3000)

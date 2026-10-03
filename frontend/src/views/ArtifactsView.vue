@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { api } from '@/api/client'
@@ -24,6 +24,18 @@ async function load() {
 }
 
 onMounted(load)
+
+// 从任务详情跳过来时组件会被复用（同一路由 /artifacts/:taskId?）：
+// 必须监听参数变化，否则要手动刷新才显示产物。
+watch(
+  () => route.params.taskId,
+  (id) => {
+    if (id && id !== taskId.value) {
+      taskId.value = id
+      load()
+    }
+  },
+)
 </script>
 
 <template>

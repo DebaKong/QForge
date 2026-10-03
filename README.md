@@ -165,6 +165,18 @@ python -m pytest -m gpu -q -s       # 端到端：真实构建 Engine、编译 C
 python -m pytest -m docker -q -s    # 容器：真实 docker build + 容器内推理（需要 Docker daemon 与基础镜像）
 ```
 
+### 界面回归检查（真实浏览器点击）
+
+后端测试全绿也可能界面点不动（上传没反应、列表点「查看」不跳转），所以要真的点一遍：
+
+```powershell
+# 需要 Playwright（只在跑这个脚本时用；默认驱动系统已装的 Edge，不用下载浏览器）
+npm install --no-save playwright
+node tools/ui_check.mjs <某个.onnx路径> http://127.0.0.1:8000
+```
+
+覆盖：列表→详情自动跳转、浏览器返回、详情页显示解析结果、选项目+选文件+上传成功。
+
 ## 配置
 
 复制 [.env.example](.env.example) 为 `.env` 后修改（`.env` 不入库）。所有变量使用 `QFORGE_` 前缀：

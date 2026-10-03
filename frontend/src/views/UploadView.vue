@@ -40,9 +40,15 @@ async function loadAssets() {
   }
 }
 
-function pickFile(event, target) {
-  // target 是 ref 对象（由模板传入），因此这里写 .value
-  target.value = event.target.files?.[0] ?? null
+// 文件选择必须用「专用事件处理函数」：
+// 模板里引用 ref 会被自动解包成值，所以 `@change="pickFile($event, modelFile)"` 传进去的是 null，
+// 函数里再写 target.value 会直接抛错 —— 文件永远存不下来，点上传只会提示"请选择文件"。
+function onModelFileChange(event) {
+  modelFile.value = event.target.files?.[0] ?? null
+}
+
+function onDatasetFileChange(event) {
+  datasetFile.value = event.target.files?.[0] ?? null
 }
 
 async function uploadModel() {
@@ -111,7 +117,8 @@ watch(projectId, loadAssets)
               <el-input v-model="modelForm.architecture" disabled />
             </el-form-item>
             <el-form-item label="ONNX 文件">
-              <input type="file" accept=".onnx" @change="pickFile($event, modelFile)" />
+              <input type="file" accept=".onnx" @change="onModelFileChange" />
+              <span class="picked">{{ modelFile ? modelFile.name : '未选择文件' }}</span>
             </el-form-item>
             <el-form-item>
               <el-button type="primary" :loading="uploadingModel" @click="uploadModel">
@@ -154,7 +161,8 @@ watch(projectId, loadAssets)
               </el-radio-group>
             </el-form-item>
             <el-form-item label="ZIP 文件">
-              <input type="file" accept=".zip" @change="pickFile($event, datasetFile)" />
+              <input type="file" accept=".zip" @change="onDatasetFileChange" />
+              <span class="picked">{{ datasetFile ? datasetFile.name : '未选择文件' }}</span>
             </el-form-item>
             <el-form-item>
               <el-button type="primary" :loading="uploadingDataset" @click="uploadDataset">
@@ -205,6 +213,11 @@ watch(projectId, loadAssets)
 <style scoped>
 .hint {
   color: #909399;
+  font-size: 12px;
+}
+.picked {
+  margin-left: 10px;
+  color: #606266;
   font-size: 12px;
 }
 </style>
