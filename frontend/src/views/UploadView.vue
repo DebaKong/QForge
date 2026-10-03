@@ -8,8 +8,11 @@ const models = ref([])
 const datasets = ref([])
 const projectId = ref('')
 
-const modelForm = ref({ name: 'yolov8n', architecture: 'yolov8', file: null })
-const datasetForm = ref({ name: 'calib-100', kind: 'calibration', file: null })
+const modelForm = ref({ name: 'yolov8n', architecture: 'yolov8' })
+const datasetForm = ref({ name: 'calib-100', kind: 'calibration' })
+// 文件必须单独用 ref 保存：模板里传的是 ref 对象本身，不能传 modelForm.file（那是 null，赋值会直接抛错）
+const modelFile = ref(null)
+const datasetFile = ref(null)
 const modelResult = ref(null)
 const datasetResult = ref(null)
 const uploadingModel = ref(false)
@@ -38,18 +41,21 @@ async function loadAssets() {
 }
 
 function pickFile(event, target) {
-  const file = event.target.files?.[0] ?? null
-  target.value = file
+  // target 是 ref 对象（由模板传入），因此这里写 .value
+  target.value = event.target.files?.[0] ?? null
 }
 
 async function uploadModel() {
-  if (!projectId.value || !modelForm.value.file) {
+  if (!projectId.value || !modelFile.value) {
     ElMessage.warning('请选择项目与 ONNX 文件')
     return
   }
   uploadingModel.value = true
   try {
-    modelResult.value = await api.uploadModel(projectId.value, modelForm.value)
+    modelResult.value = await api.uploadModel(projectId.value, {
+      ...modelForm.value,
+      file: modelFile.value,
+    })
     ElMessage.success('模型已上传并通过校验')
     await loadAssets()
   } catch (error) {
@@ -60,13 +66,16 @@ async function uploadModel() {
 }
 
 async function uploadDataset() {
-  if (!projectId.value || !datasetForm.value.file) {
+  if (!projectId.value || !datasetFile.value) {
     ElMessage.warning('请选择项目与 ZIP 文件')
     return
   }
   uploadingDataset.value = true
   try {
-    datasetResult.value = await api.uploadDataset(projectId.value, datasetForm.value)
+    datasetResult.value = await api.uploadDataset(projectId.value, {
+      ...datasetForm.value,
+      file: datasetFile.value,
+    })
     ElMessage.success(`校准集已上传，解压出 ${datasetResult.value.image_count} 张图像`)
     await loadAssets()
   } catch (error) {
@@ -102,7 +111,7 @@ watch(projectId, loadAssets)
               <el-input v-model="modelForm.architecture" disabled />
             </el-form-item>
             <el-form-item label="ONNX 文件">
-              <input type="file" accept=".onnx" @change="pickFile($event, modelForm.file)" />
+              <input type="file" accept=".onnx" @change="pickFile($event, modelFile)" />
             </el-form-item>
             <el-form-item>
               <el-button type="primary" :loading="uploadingModel" @click="uploadModel">
@@ -145,7 +154,7 @@ watch(projectId, loadAssets)
               </el-radio-group>
             </el-form-item>
             <el-form-item label="ZIP 文件">
-              <input type="file" accept=".zip" @change="pickFile($event, datasetForm.file)" />
+              <input type="file" accept=".zip" @change="pickFile($event, datasetFile)" />
             </el-form-item>
             <el-form-item>
               <el-button type="primary" :loading="uploadingDataset" @click="uploadDataset">

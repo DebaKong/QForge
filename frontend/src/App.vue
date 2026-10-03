@@ -78,23 +78,55 @@ body {
 .brand-title {
   font-size: 20px;
   font-weight: 600;
+  letter-spacing: 0.5px;
 }
 .brand-sub {
   font-size: 12px;
-  opacity: 0.7;
+  color: rgba(255, 255, 255, 0.65);
   margin-top: 4px;
 }
+/* 侧边栏是深色，但 Element Plus 的菜单默认用深色文字 —— 深色叠深色就看不清了。
+   用官方 CSS 变量把菜单改成浅色文字（这是"左侧边栏文字不清楚"的原因）。 */
 .app-aside .el-menu {
   background: transparent;
   border-right: none;
+  --el-menu-bg-color: transparent;
+  --el-menu-text-color: rgba(255, 255, 255, 0.86);
+  --el-menu-hover-text-color: #ffffff;
+  --el-menu-hover-bg-color: rgba(255, 255, 255, 0.10);
+  --el-menu-active-color: #ffffff;
+}
+.app-aside .el-menu-item {
+  position: relative;
+  height: 44px;
+  line-height: 44px;
+  margin: 3px 8px;
+  border-radius: 6px;
+}
+.app-aside .el-menu-item.is-active {
+  background: rgba(64, 158, 255, 0.24);
+  font-weight: 600;
+}
+.app-aside .el-menu-item.is-active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: #409eff;
 }
 .app-header {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   background: #fff;
   border-bottom: 1px solid #e4e7ed;
   font-size: 13px;
+}
+.el-main {
+  padding: 16px 20px;
 }
 .phase-tag {
   background: #ecf5ff;

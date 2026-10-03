@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -21,6 +22,27 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger(__name__)
+
+# 静态资源的 Content-Type **不能**依赖系统 mimetypes：
+# 实测 Windows 上 .js 会被解析成 text/plain，浏览器按 ES module 加载时直接拒绝：
+#   "Failed to load module script: Expected a JavaScript-or-Wasm module script but the
+#    server responded with a MIME type of 'text/plain'"
+# 结果是界面白屏（这正是用户截图里的报错）。这里显式登记前端会用到的类型，跨平台一致。
+for _extension, _mime in {
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".css": "text/css",
+    ".json": "application/json",
+    ".map": "application/json",
+    ".svg": "image/svg+xml",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".wasm": "application/wasm",
+    ".webmanifest": "application/manifest+json",
+    ".ico": "image/x-icon",
+}.items():
+    mimetypes.add_type(_mime, _extension)
 
 _FALLBACK_PAGE = """<!DOCTYPE html>
 <html lang="zh-CN">

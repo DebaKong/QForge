@@ -295,6 +295,51 @@ def test_powershell_scripts_are_utf8_with_bom() -> None:
         assert raw.startswith(b"\xef\xbb\xbf"), f"{path.name} 含非 ASCII 字符但缺少 UTF-8 BOM"
 
 
+def test_frontend_assets_get_correct_mime_types(tmp_path: Path) -> None:
+    """前端静态资源的 Content-Type 必须是正确类型。
+
+    实测（白屏 bug）：Windows 上系统 mimetypes 把 `.js` 解析成 `text/plain`，
+    浏览器按 ES module 加载时直接拒绝，界面整个白屏：
+      "Expected a JavaScript-or-Wasm module script but the server responded with
+       a MIME type of 'text/plain'"
+    """
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text(
+        '<html><script type="module" src="/assets/app.js"></script></html>', encoding="utf-8"
+    )
+    (dist / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+    (dist / "assets" / "app.css").write_text("body{}", encoding="utf-8")
+
+    app = FastAPI()
+    register_frontend(app, dist, api_prefix="/api")
+    client = TestClient(app)
+
+    script = client.get("/assets/app.js")
+    assert script.status_code == 200
+    assert script.headers["content-type"].startswith("text/javascript"), script.headers["content-type"]
+
+    style = client.get("/assets/app.css")
+    assert style.status_code == 200
+    assert style.headers["content-type"].startswith("text/css"), style.headers["content-type"]
+
+
+def test_batch_files_are_crlf_and_ascii() -> None:
+    """.bat 必须是 CRLF + 纯 ASCII。
+
+    实测：LF-only 的 QForge.bat 被 cmd.exe 拆得七零八落
+    （`'etlocal' 不是内部或外部命令`、`'cal' ...`），根本起不来；
+    UTF-8 中文在 cmd 里也会乱码，所以 .bat 只写 ASCII。
+    """
+    batch_files = sorted(REPO_ROOT.glob("*.bat")) + sorted((REPO_ROOT / "scripts").glob("*.bat"))
+    assert batch_files, "应当存在 .bat 启动脚本"
+    for path in batch_files:
+        raw = path.read_bytes()
+        assert raw.count(b"\n") == raw.count(b"\r\n"), f"{path.name} 存在裸 LF 行尾（cmd 需要 CRLF）"
+        non_ascii = [index for index, byte in enumerate(raw) if byte > 127]
+        assert not non_ascii, f"{path.name} 含非 ASCII 字节（cmd 会乱码）：{non_ascii[:3]}"
+
+
 def test_shell_scripts_use_lf_line_endings() -> None:
     """shell 脚本必须是 LF 行尾并带 shebang。
 
