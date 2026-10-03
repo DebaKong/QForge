@@ -10,6 +10,8 @@ const models = ref([])
 const datasets = ref([])
 const submitting = ref(false)
 const enqueueNow = ref(true)
+// 实时推理（摄像头/视频 + 结果推送）：构建带 OpenCV 的产物
+const withCamera = ref(false)
 
 const form = ref({
   project_id: '',
@@ -52,7 +54,11 @@ async function submit() {
       ...form.value,
       model_id: form.value.model_id || null,
       dataset_id: form.value.dataset_id || null,
-      build: { cpp_build: 'auto' },
+      // 要摄像头/推送能力就必须真的有编译产物（zip 里的 bin/），所以一并提升为 required
+      build: {
+        cpp_build: withCamera.value ? 'required' : 'auto',
+        with_camera: withCamera.value,
+      },
     })
     ElMessage.success(`任务已创建：${task.id}`)
     if (enqueueNow.value) {
@@ -114,6 +120,15 @@ async function submit() {
         <el-input v-model="form.backend_name" disabled />
       </el-form-item>
 
+      <el-form-item label="实时推理">
+        <el-checkbox v-model="withCamera">需要摄像头/视频实时推理（构建 OpenCV 版产物）</el-checkbox>
+        <div class="hint">
+          勾选后：自动以 <span class="mono">build.with_camera=true</span> 编译（需要本机有 OpenCV
+          开发文件，缺失只会提示不会让任务失败），产物的 zip 会带上 OpenCV 运行库，解压后用
+          <span class="mono">start_camera.bat</span> 即可边采集边把检测结果推给别的系统。
+        </div>
+      </el-form-item>
+
       <el-form-item>
         <el-checkbox v-model="enqueueNow">创建后立即入队执行</el-checkbox>
       </el-form-item>
@@ -126,3 +141,16 @@ async function submit() {
     </el-form>
   </el-card>
 </template>
+
+<style scoped>
+.hint {
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.7;
+  margin-top: 4px;
+}
+.mono {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+}
+</style>

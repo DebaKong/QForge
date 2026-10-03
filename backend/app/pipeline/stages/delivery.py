@@ -83,6 +83,124 @@ def _copy_binary(context: PipelineContext, staging: Path) -> Path | None:
     return None
 
 
+# Windows 系统提供的 DLL：不需要（也不应该）打进交付包
+_SYSTEM_DLL_PREFIXES = ("api-ms-win-", "ext-ms-")
+_SYSTEM_DLL_NAMES = {
+    "kernel32.dll",
+    "user32.dll",
+    "gdi32.dll",
+    "advapi32.dll",
+    "ole32.dll",
+    "oleaut32.dll",
+    "shell32.dll",
+    "ws2_32.dll",
+    "comdlg32.dll",
+    "comctl32.dll",
+    "setupapi.dll",
+    "winmm.dll",
+    "ntdll.dll",
+    "crypt32.dll",
+    "bcrypt.dll",
+    "secur32.dll",
+    "dbghelp.dll",
+    "imm32.dll",
+    "version.dll",
+    "userenv.dll",
+    "dwmapi.dll",
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "msvcp140.dll",
+    "concrt140.dll",
+    "opengl32.dll",
+    "uxtheme.dll",
+}
+
+
+def _dumpbin_dependents(executable: Path) -> list[str]:
+    """用 dumpbin 读一个 DLL/EXE 直接依赖的模块名（失败返回空表，不阻断交付）。"""
+    from app.services import toolchain
+
+    try:
+        result = toolchain.run_in_vs_env(
+            [f'dumpbin /nologo /dependents "{executable}"'],
+            cwd=executable.parent,
+            log_path=executable.parent / "dumpbin_dependents.log",
+            timeout_seconds=120,
+        )
+    except Exception:  # pragma: no cover - 工具链异常不应影响交付
+        logger.debug("dumpbin 调用失败：%s", executable, exc_info=True)
+        return []
+
+    names: list[str] = []
+    for line in result.log_text.splitlines():
+        candidate = line.strip()
+        if not candidate.lower().endswith(".dll"):
+            continue
+        name = candidate.split()[-1].lower()
+        if name.startswith(_SYSTEM_DLL_PREFIXES) or name in _SYSTEM_DLL_NAMES:
+            continue
+        names.append(name)
+    return names
+
+
+def _resolve_dll_closure(
+    roots: list[Path], search_dirs: list[Path], *, limit: int = 200
+) -> list[Path]:
+    """递归解析 DLL 依赖闭包（只在本机 OpenCV 目录里找得到的才算）。
+
+    实测教训：只把 opencv_*.dll 放进交付包，解压后运行会以 0xC0000135
+    （STATUS_DLL_NOT_FOUND）失败——它们还依赖 zlib/libjpeg/ffmpeg 等库。
+    """
+    resolved: dict[str, Path] = {}
+    pending = [item.name.lower() for item in roots]
+    while pending and len(resolved) < limit:
+        name = pending.pop()
+        if name in resolved:
+            continue
+        for directory in search_dirs:
+            candidate = directory / name
+            if candidate.is_file():
+                resolved[name] = candidate
+                pending.extend(_dumpbin_dependents(candidate))
+                break
+    return list(resolved.values())
+
+
+def _copy_opencv_runtime(staging: Path, bin_dir: Path | None) -> list[str]:
+    """启用实时推理的产物：把 OpenCV 运行库**及其依赖闭包**放进 bin/。
+
+    这样交付 zip 在目标机上仍然「解压即用」（否则解压后运行会因缺少依赖 DLL 直接失败）。
+    """
+    if bin_dir is None or not Path(bin_dir).is_dir():
+        return []
+    # 只复制程序真正用到的模块（conda 的 bin 里还有几十个 opencv_* 模块与 Qt6，全带上太大）
+    wanted = ("opencv_world", "opencv_core", "opencv_imgproc", "opencv_videoio", "opencv_highgui")
+    modules: list[Path] = []
+    for item in sorted(Path(bin_dir).iterdir()):
+        if not item.is_file():
+            continue
+        name = item.name.lower()
+        if not (name.endswith(".dll") or ".so" in name):
+            continue
+        if any(module in name for module in wanted):
+            modules.append(item)
+
+    # 依赖闭包（zlib/libjpeg/ffmpeg 等）与 OpenCV 在同一目录下
+    closure = _resolve_dll_closure(modules, [Path(bin_dir)]) if modules else []
+
+    copied: list[str] = []
+    for item in [*modules, *closure]:
+        target = staging / "bin" / item.name
+        if target.exists():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(item, target)
+        copied.append(item.name)
+    if copied:
+        logger.info("已把 OpenCV 运行库放入交付目录：%d 个 DLL", len(copied))
+    return copied
+
+
 def _assemble_artifact_tree(context: PipelineContext) -> Path:
     """按 SPEC 12.2 的 artifact/ 结构组装交付目录。"""
     staging = context.intermediate_dir / "artifact"
@@ -119,6 +237,11 @@ def _assemble_artifact_tree(context: PipelineContext) -> Path:
 
     # 编译产物放进 bin/：用户解压后可以直接启动推理，不必自己编译
     _copy_binary(context, staging)
+
+    # 启用实时推理的产物：把 OpenCV 运行库一起带上（保持「解压即用」）
+    camera = (context.cpp_build_status or {}).get("camera") or {}
+    if camera.get("status") == "ENABLED":
+        _copy_opencv_runtime(staging, (camera.get("opencv") or {}).get("bin_dir"))
 
     if context.docker_dir.exists():
         target = staging / "docker"
@@ -291,7 +414,11 @@ def run_packaging(context: PipelineContext) -> None:
     add("docker", context.docker_dir / "Dockerfile", "运行镜像 Dockerfile")
     add("docker", context.docker_dir / "entrypoint.sh", "容器启动脚本")
     # 最终交付物：zip 归档（解压后跑 start.bat / start.sh 即可推理）
-    add("archive", archive_path, "完整产物归档（解压后运行 start.bat / start.sh 即可推理）")
+    camera_enabled = ((context.cpp_build_status or {}).get("camera") or {}).get("status") == "ENABLED"
+    archive_note = "完整产物归档（解压后运行 start.bat / start.sh 即可推理"
+    archive_note += "；含实时推理 start_camera" if camera_enabled else ""
+    archive_note += "）"
+    add("archive", archive_path, archive_note)
     # 逐个文件也登记，便于排障（界面上折叠展示）
     if context.source_dir:
         add("source", context.source_dir / "start.bat", "一键启动脚本（Windows）")

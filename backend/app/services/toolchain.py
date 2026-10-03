@@ -177,6 +177,19 @@ def require_toolchain() -> ToolchainInfo:
     return info
 
 
+def build_environment(extra_dll_dirs: list[str] | None = None) -> dict[str, str]:
+    """构造子进程环境（编译与运行验证共用）。
+
+    `extra_dll_dirs` 用于追加可选能力的运行库目录（例如实时推理用的 OpenCV bin）。
+    """
+    info = require_toolchain()
+    env = _child_env(info)
+    if extra_dll_dirs:
+        existing = env.get("PATH", "")
+        env["PATH"] = os.pathsep.join([*dict.fromkeys(extra_dll_dirs), existing])
+    return env
+
+
 def _child_env(info: ToolchainInfo) -> dict[str, str]:
     """构造子进程环境：把 cmake/ninja 与 GPU 运行库目录加入 PATH。"""
     env = os.environ.copy()
@@ -290,15 +303,24 @@ def build_cpp_project(
     log_path: Path,
     timeout_seconds: int,
     jobs: int | None = None,
+    extra_defines: dict[str, str] | None = None,
 ) -> CommandResult:
-    """执行 CMake Configure + Build（SPEC 11.3 步骤 2~3）。"""
+    """执行 CMake Configure + Build（SPEC 11.3 步骤 2~3）。
+
+    `extra_defines` 用于把可选能力的开关传给 CMake（例如实时推理的
+    `QFORGE_WITH_OPENCV=ON` 与 `QFORGE_OPENCV_ROOT=<目录>`）。
+    """
     info = require_toolchain()
     assert info.cmake is not None
 
+    defines = " ".join(
+        f'-D{key}="{value}"' if " " in value else f"-D{key}={value}"
+        for key, value in (extra_defines or {}).items()
+    )
     generator = "-G Ninja" if info.ninja else ""
     configure = (
         f'"{info.cmake}" -S "{project_dir}" -B "{build_dir}" {generator} '
-        f"-DCMAKE_BUILD_TYPE=Release"
+        f"-DCMAKE_BUILD_TYPE=Release {defines}"
     ).replace("  ", " ")
     build = f'"{info.cmake}" --build "{build_dir}" --config Release'
     if jobs:

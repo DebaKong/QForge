@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     # 指向包含 include/ 与 lib/ 的目录。
     tensorrt_root: Path | None = None
     cuda_root: Path | None = None
+    # 可选能力：实时推理（摄像头/视频/预览窗口）需要 OpenCV 开发文件；
+    # 留空则自动探测工具链搜索根（含 conda 的 <prefix>/Library 布局）。
+    opencv_root: Path | None = None
     toolchain_search_roots: list[Path] = [
         data_root().parent / "toolchain",  # 安装脚本自动下载的 CUDA 文件放在这里
         Path("D:/qforge-toolchain"),

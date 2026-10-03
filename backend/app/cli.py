@@ -291,6 +291,29 @@ def _check_build_tools() -> Check:
     )
 
 
+def _check_opencv() -> Check:
+    """可选能力：实时推理（摄像头/视频/预览窗口）需要 OpenCV 开发文件。"""
+    from app.services import opencv_dev
+
+    files = opencv_dev.locate(get_settings())
+    if files.complete:
+        return Check(
+            "OpenCV（实时推理可选）",
+            False,
+            STATUS_PASS,
+            f"OpenCV {files.version or '未知版本'} @ {files.root}（可构建摄像头/推送产物）",
+        )
+    return Check(
+        "OpenCV（实时推理可选）",
+        False,
+        STATUS_SKIP,
+        "未找到 → 不影响核心流程与单图推理；只有「实时摄像头/视频/预览」需要",
+        "任选其一：1) 设置 QFORGE_OPENCV_ROOT 指向含 include/ 与 lib/ 的目录；"
+        "2) 把 OpenCV 放到工具链搜索根（如 D:/qforge-toolchain）；"
+        "3) 不装 OpenCV，改用 --stdin-frames + ffmpeg 的零依赖实时方案",
+    )
+
+
 def _check_docker() -> Check:
     from app.services import docker_build
 
@@ -331,6 +354,7 @@ def collect_checks() -> list[Check]:
         _check_redis(),
         _check_dev_files(),
         _check_build_tools(),
+        _check_opencv(),
         _check_docker(),
         _check_frontend(),
     ]

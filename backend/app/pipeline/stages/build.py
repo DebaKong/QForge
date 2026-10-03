@@ -34,7 +34,7 @@ from app.errors import (
 )
 from app.pipeline.context import PipelineContext
 from app.pipeline.stages.prepare import record_artifact, write_json
-from app.services import toolchain
+from app.services import opencv_dev, toolchain
 from app.services.layout import place_input_file
 
 logger = logging.getLogger("qforge.pipeline")
@@ -162,9 +162,43 @@ def _compile_blockers(context: PipelineContext) -> list[str]:
     return problems
 
 
+def _camera_setup(context: PipelineContext) -> tuple[dict[str, str], dict[str, Any]]:
+    """实时推理（摄像头/视频/预览）开关：返回 CMake 定义与报告片段。
+
+    `build.with_camera=true` 时尝试启用 OpenCV；**找不到 OpenCV 不算失败**——
+    仍然编译（只是产物没有摄像头能力），并把原因写进报告与任务日志，避免
+    因为一个可选能力把整个任务判为 FAILED。
+    """
+    if not bool(context.build_options.get("with_camera")):
+        return {}, {"status": "OFF", "reason": "任务未开启实时推理（build.with_camera）"}
+
+    files = opencv_dev.locate(context.settings)
+    if not files.complete:
+        logger.warning("要求实时推理，但未找到 OpenCV 开发文件：%s", files.problems)
+        return {}, {
+            "status": "BLOCKED",
+            "reason": "任务要求实时推理（摄像头/视频/预览），但本机缺少 OpenCV 开发文件",
+            "problems": files.problems,
+            "note": "补齐 OpenCV 后重跑本任务即可得到带摄像头能力的产物；本次仍照常编译（无摄像头能力）",
+        }
+
+    defines = {
+        "QFORGE_WITH_OPENCV": "ON",
+        "QFORGE_OPENCV_ROOT": files.root.as_posix() if files.root else "",
+    }
+    logger.info("实时推理已启用：OpenCV %s（%s）", files.version, files.root)
+    return defines, {
+        "status": "ENABLED",
+        "opencv": files.to_dict(),
+        "note": "产物内置摄像头/视频/预览能力；交付 zip 会一并带上 OpenCV 运行库",
+    }
+
+
 def run_build(context: PipelineContext) -> None:
     """CMake Configure + Build（SPEC 11.3 步骤 2~3）。"""
     assert context.source_dir is not None
+
+    camera_defines, camera_status = _camera_setup(context)
 
     mode = str(context.build_options.get("cpp_build") or "auto").lower()
     if mode not in CPP_BUILD_MODES:
@@ -177,6 +211,7 @@ def run_build(context: PipelineContext) -> None:
             "status": "SKIPPED",
             "reason": "任务配置 build.cpp_build=skip，未执行编译与运行验证",
             "mode": mode,
+            "camera": camera_status,
         }
         write_json(context.report_file("cpp_build.json"), context.cpp_build_status)
         context.reports.append("report/cpp_build.json")
@@ -196,6 +231,7 @@ def run_build(context: PipelineContext) -> None:
             "mode": mode,
             "reason": "本机缺少编译生成的 C++ 工程所需文件，未执行编译与运行验证",
             "problems": blockers,
+            "camera": camera_status,
             "note": "补齐后重跑本任务即可完成 SPEC 11.3 的编译与运行验证",
         }
         write_json(context.report_file("cpp_build.json"), context.cpp_build_status)
@@ -211,6 +247,7 @@ def run_build(context: PipelineContext) -> None:
         build_dir=build_dir,
         log_path=context.log_file("cpp_build.log"),
         timeout_seconds=context.settings.build_timeout_seconds,
+        extra_defines=camera_defines,
     )
     context.build_dir = build_dir
 
@@ -227,6 +264,7 @@ def run_build(context: PipelineContext) -> None:
         "executable": str(executable),
         "duration_seconds": round(result.duration_seconds, 3),
         "toolchain": toolchain_info.to_dict(),
+        "camera": camera_status,
         "log": "logs/cpp_build.log",
     }
     logger.info("编译完成，可执行文件：%s", executable.name)
@@ -264,7 +302,12 @@ def _run_executable(
     # 默认不把 TensorRT/CUDA 的 DLL 复制进每个任务的 build 目录（其中
     # nvinfer_builder_resource_*.dll 约 1.9 GB 且运行期无用）；改为运行时把
     # 这些 bin 目录加入 PATH，程序同样能找到依赖。
-    run_env = toolchain.build_environment()
+    # 实时推理产物还依赖 OpenCV 运行库：编译时探测到的 bin 目录也要加进 PATH。
+    extra_dll_dirs: list[str] = []
+    opencv_bin = ((context.cpp_build_status or {}).get("camera") or {}).get("opencv") or {}
+    if opencv_bin.get("bin_dir"):
+        extra_dll_dirs.append(str(opencv_bin["bin_dir"]))
+    run_env = toolchain.build_environment(extra_dll_dirs=extra_dll_dirs)
 
     try:
         completed = subprocess.run(
