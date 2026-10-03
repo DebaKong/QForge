@@ -14,3 +14,7 @@
 Dockerfile      text eol=lf
 *.Dockerfile    text eol=lf
 docker-compose.yml text eol=lf
+
+# 代码生成模板保持 LF：模板里若带 CRLF，渲染出的 shell 脚本就会带 CRLF（bad interpreter）。
+# generator 另有行尾规范化兜底（rendered.replace("\r\n", "\n")）。
+*.j2    text eol=lf

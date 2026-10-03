@@ -134,6 +134,9 @@ def generate_project(
         for template_name, output_name in RENDER_PLAN:
             template = environment.get_template(template_name)
             rendered = template.render(**context)
+            # 先规范化成 LF：模板文件本身可能被 git 检出成 CRLF（Windows），
+            # 不规范化会让生成的 shell 脚本带 CRLF（bad interpreter）。
+            rendered = rendered.replace("\r\n", "\n")
             target = dest / output_name
             target.parent.mkdir(parents=True, exist_ok=True)
             # .bat/.cmd 必须 CRLF（cmd.exe 靠它解析标签/goto），其余一律 LF
