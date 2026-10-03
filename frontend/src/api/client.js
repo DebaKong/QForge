@@ -19,6 +19,12 @@ export const api = {
   listProjects: () => client.get('/projects').then((r) => r.data),
   createProject: (payload) => client.post('/projects', payload).then((r) => r.data),
   getProject: (id) => client.get(`/projects/${id}`).then((r) => r.data),
+  // 删除项目：先取「影响面」给确认框看，再执行（或批量执行）
+  previewProjectDeletion: (id) =>
+    client.get(`/projects/${id}/deletion-preview`).then((r) => r.data),
+  deleteProject: (id) => client.delete(`/projects/${id}`).then((r) => r.data),
+  deleteProjects: (projectIds) =>
+    client.post('/projects/delete', { project_ids: projectIds }).then((r) => r.data),
 
   listModels: (projectId) =>
     client.get('/models', { params: { project_id: projectId } }).then((r) => r.data),
