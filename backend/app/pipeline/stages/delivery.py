@@ -31,7 +31,9 @@ def _sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def _copy_tree(source: Path, destination: Path) -> int:
+def _copy_tree(
+    source: Path, destination: Path, *, exclude_names: frozenset[str] = frozenset()
+) -> int:
     """复制目录（跳过构建中间产物），返回复制文件数。"""
     count = 0
     for path in source.rglob("*"):
@@ -39,11 +41,40 @@ def _copy_tree(source: Path, destination: Path) -> int:
             continue
         if not path.is_file():
             continue
+        if path.name in exclude_names:
+            continue
         target = destination / path.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
         count += 1
     return count
+
+
+# 交付根目录自己用的一键启动文件：只放在根目录，不在 source/ 里重复一份
+_DELIVERY_ROOT_FILES = ("README.md", "start.bat", "start.sh")
+
+
+def _copy_binary(context: PipelineContext, staging: Path) -> Path | None:
+    """把编译产物放进 bin/，让用户解压后可以直接启动推理（无需自己编译）。
+
+    Windows 产物是 .exe，Linux/容器里编译出来的是无扩展名可执行文件；两者都接受。
+    """
+    if context.source_dir is None:
+        return None
+    build_dir = context.source_dir / "build"
+    if not build_dir.is_dir():
+        return None
+
+    for name in ("qforge_detector.exe", "qforge_detector"):
+        candidate = build_dir / name
+        if candidate.is_file():
+            target = staging / "bin" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(candidate, target)
+            logger.info("已将编译产物放入交付目录：bin/%s", name)
+            return target
+    logger.info("未找到编译产物（本次可能未编译或编译失败），交付目录不含 bin/")
+    return None
 
 
 def _assemble_artifact_tree(context: PipelineContext) -> Path:
@@ -64,15 +95,24 @@ def _assemble_artifact_tree(context: PipelineContext) -> Path:
             shutil.copy2(metadata, staging / "model" / metadata.name)
 
     if context.source_dir and context.source_dir.exists():
-        copied["source"] = _copy_tree(context.source_dir, staging / "source")
-        readme = context.source_dir / "README.md"
-        if readme.exists():
-            shutil.copy2(readme, staging / "README.md")
+        # README 与一键启动脚本属于「交付根目录」，不在 source/ 里再放一份（避免用户点错）
+        copied["source"] = _copy_tree(
+            context.source_dir,
+            staging / "source",
+            exclude_names=frozenset(_DELIVERY_ROOT_FILES),
+        )
+        for name in _DELIVERY_ROOT_FILES:
+            item = context.source_dir / name
+            if item.exists():
+                shutil.copy2(item, staging / name)
         config_file = context.source_dir / "config" / "model.yaml"
         if config_file.exists():
             target = staging / "config" / "model.yaml"
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(config_file, target)
+
+    # 编译产物放进 bin/：用户解压后可以直接启动推理，不必自己编译
+    _copy_binary(context, staging)
 
     if context.docker_dir.exists():
         target = staging / "docker"
@@ -244,7 +284,15 @@ def run_packaging(context: PipelineContext) -> None:
         add("config", context.source_dir / "config" / "model.yaml", "模型与预处理配置")
     add("docker", context.docker_dir / "Dockerfile", "运行镜像 Dockerfile")
     add("docker", context.docker_dir / "entrypoint.sh", "容器启动脚本")
-    add("report", archive_path, "完整产物归档（SPEC 12.2 artifact 结构）")
+    # 最终交付物：zip 归档（解压后跑 start.bat / start.sh 即可推理）
+    add("archive", archive_path, "完整产物归档（解压后运行 start.bat / start.sh 即可推理）")
+    # 逐个文件也登记，便于排障（界面上折叠展示）
+    if context.source_dir:
+        add("source", context.source_dir / "start.bat", "一键启动脚本（Windows）")
+        add("source", context.source_dir / "start.sh", "一键启动脚本（Linux/macOS）")
+        add("source", context.source_dir / "README.md", "交付说明（怎么跑、输出怎么读）")
+        binary = context.source_dir / "build" / "qforge_detector.exe"
+        add("engine", binary if binary.exists() else context.source_dir / "build" / "qforge_detector", "编译好的推理程序")
     # 报告按**实际生成**的清单登记（而不是写死名单，否则新增报告会漏登记）
     # 注意：context.reports 中的路径是相对**任务目录**的（如 report/model_info.json）
     for relative in dict.fromkeys(context.reports):
@@ -261,6 +309,7 @@ def run_packaging(context: PipelineContext) -> None:
                 relative_path=entry["relative_path"],
                 size_bytes=entry["size_bytes"],
                 sha256=entry["sha256"],
+                description=entry["description"],
             )
             session.add(row)
             session.flush()

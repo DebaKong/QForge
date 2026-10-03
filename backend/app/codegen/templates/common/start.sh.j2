@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# QForge 推理程序一键启动（Linux / macOS）—— 由 QForge 生成
+#
+# 解压产物后直接执行本脚本即可跑一次推理：
+#     ./start.sh
+# 详细说明见同目录 README.md。
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+ENGINE="model/model.engine"
+IMAGE="test/sample.ppm"
+OUTPUT="result.json"
+BIN="bin/qforge_detector"
+
+echo "============================================================"
+echo " QForge 推理（{{ model.architecture }} / {{ precision_label }}）"
+echo "============================================================"
+echo
+
+if [ ! -f "$ENGINE" ]; then
+    echo "[失败] 找不到 $ENGINE（推理必须要有 Engine）" >&2
+    exit 1
+fi
+
+if [ ! -x "$BIN" ]; then
+    if [ -f "bin/qforge_detector.exe" ]; then
+        cat >&2 <<'MSG'
+[失败] 本产物里的可执行文件是 Windows 版（bin/qforge_detector.exe）。
+       在 Linux/macOS 上请任选一种方式：
+         1) 用容器：  docker build -t qforge-infer docker && \
+                      docker run --rm --gpus all -v "$PWD:/work" qforge-infer
+         2) 从源码重新编译：见 source/README.md
+MSG
+    else
+        echo "[失败] 找不到可执行文件 $BIN（本产物可能未包含编译产物）" >&2
+        echo "       可从 source/ 重新编译，或用 docker/ 里的容器方式。" >&2
+    fi
+    exit 1
+fi
+
+echo "  engine : $ENGINE"
+[ -f "$IMAGE" ] && echo "  image  : $IMAGE"
+echo "  output : $OUTPUT"
+echo
+
+set +e
+"$BIN" --engine "$ENGINE" --image "$IMAGE" --output "$OUTPUT" --iterations 5
+CODE=$?
+set -e
+
+echo
+if [ "$CODE" -ne 0 ]; then
+    cat >&2 <<MSG
+[失败] 退出码 $CODE。常见原因：
+       1) 找不到 TensorRT/CUDA 运行库（把 TensorRT 的 lib 目录加入 LD_LIBRARY_PATH）
+       2) 显卡驱动过旧
+       3) GPU 与构建 Engine 的环境不一致
+       详见 README.md
+MSG
+    exit "$CODE"
+fi
+
+echo " 完成：结果已写入 $OUTPUT"

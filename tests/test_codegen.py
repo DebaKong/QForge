@@ -145,6 +145,29 @@ def test_generated_cpp_references_model_adapter(tmp_path: Path) -> None:
     assert "dump-raw" in main_cpp
 
 
+def test_start_scripts_are_generated_with_correct_line_endings(tmp_path: Path) -> None:
+    """交付物要「解压即用」：工程根目录必须有 start.bat / start.sh，且行尾各自正确。
+
+    实测教训：`.bat` 用 LF 会被 cmd.exe 拆坏（'etlocal' 不是内部或外部命令）；
+    `.sh` 用 CRLF 会 bad interpreter；`.bat` 含中文会乱码。
+    """
+    source = _render(tmp_path)
+
+    bat = (source / "start.bat").read_bytes()
+    assert bat.startswith(b"@echo off")
+    assert b"\r\n" in bat
+    assert bat.replace(b"\r\n", b"").count(b"\n") == 0, "start.bat 必须是纯 CRLF"
+    assert all(byte < 128 for byte in bat), "start.bat 必须是 ASCII（cmd 对 UTF-8 支持差）"
+
+    shell = (source / "start.sh").read_bytes()
+    assert shell.startswith(b"#!")
+    assert b"\r\n" not in shell, "start.sh 必须是 LF"
+
+    readme = (source / "README.md").read_text(encoding="utf-8")
+    for expected in ("start.bat", "start.sh", "一键启动", "bin/", "model/model.engine"):
+        assert expected in readme, f"交付说明里应提到 {expected}"
+
+
 def test_dockerfile_generation(tmp_path: Path) -> None:
     definition = ModelDefinition.parse(DEFINITION_PAYLOAD)
     path = generate_dockerfile(

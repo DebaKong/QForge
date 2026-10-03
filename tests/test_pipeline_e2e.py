@@ -185,6 +185,24 @@ def test_full_pipeline_end_to_end(
     assert {"engine", "report", "source", "config", "docker"} <= kinds
     archive = [item for item in artifacts if item["relative_path"].endswith("artifact.zip")]
     assert archive and archive[0]["size_bytes"] > 0
+    assert archive[0]["kind"] == "archive", "zip 归档应是交付物类型（界面据此突出展示）"
+    assert archive[0]["description"], "交付物必须有说明文字"
+
+    # 交付物必须『解压即用』：根目录有启动脚本与说明，bin/ 有编译好的推理程序
+    response = client.get(f"/api/tasks/{task_id}/artifacts/{archive[0]['id']}/download")
+    with zipfile.ZipFile(io.BytesIO(response.content)) as bundle:
+        names = set(bundle.namelist())
+    for expected in ("start.bat", "start.sh", "README.md", "model/model.engine"):
+        assert expected in names, f"交付 zip 缺少 {expected}：{sorted(names)}"
+    assert any(name.startswith("bin/qforge_detector") for name in names), "交付 zip 缺少可执行文件"
+    assert any(name.endswith("config/model.yaml") for name in names)
+    assert not any(name.startswith("source/start.") for name in names), (
+        "启动脚本只应放在解压根目录，避免用户在 source/ 里点错"
+    )
+    # start.bat 必须 CRLF（cmd.exe），start.sh 必须 LF（否则 bad interpreter）
+    with zipfile.ZipFile(io.BytesIO(response.content)) as bundle:
+        assert b"\r\n" in bundle.read("start.bat")
+        assert b"\r\n" not in bundle.read("start.sh")
 
     task = client.get(f"/api/tasks/{task_id}").json()
     assert task["artifact_id"], "SPEC 13.1：任务应指向最终产物"

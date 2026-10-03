@@ -48,6 +48,9 @@ RENDER_PLAN: tuple[tuple[str, str], ...] = (
     ("common/CMakeLists.txt.j2", "CMakeLists.txt"),
     ("config/model.yaml.j2", "config/model.yaml"),
     ("config/README.md.j2", "README.md"),
+    # 交付产物根目录的"一键启动"脚本（解压后直接跑）
+    ("common/start.bat.j2", "start.bat"),
+    ("common/start.sh.j2", "start.sh"),
     ("config/test_README.md.j2", "test/README.md"),
 )
 
@@ -133,7 +136,10 @@ def generate_project(
             rendered = template.render(**context)
             target = dest / output_name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(rendered, encoding="utf-8", newline="\n")
+            # .bat/.cmd 必须 CRLF（cmd.exe 靠它解析标签/goto），其余一律 LF
+            # （shell 脚本若带 CRLF 会 bad interpreter，见 AGENTS.md 工程环境注意事项）
+            newline = "\r\n" if output_name.lower().endswith((".bat", ".cmd")) else "\n"
+            target.write_text(rendered, encoding="utf-8", newline=newline)
             project.files.append(output_name)
     except TemplateError as exc:
         raise CodegenFailedError(

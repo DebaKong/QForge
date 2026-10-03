@@ -1,61 +1,129 @@
-# {{ model.architecture }} {{ model.task }} 推理工程（由 QForge 生成）
+# QForge 交付产物：{{ model.architecture }} 检测推理（{{ precision_label }}）
+
+> **这就是最终交付物。** 解压后执行 `start.bat`（Windows）或 `./start.sh`（Linux/macOS）即可跑一次推理。
 
 - 任务 ID：`{{ task_id }}`
 - 精度模式：**{{ precision_label }}**
-- 架构：{{ model.architecture }}　后端：{{ backend.name }} {{ backend.version }}
-- GPU 架构：{{ backend.gpu_arch }}　CUDA：{{ backend.cuda_version }}
+- 架构 / 后端：{{ model.architecture }} / {{ backend.name }} {{ backend.version }}
+- 构建环境：GPU {{ backend.gpu_arch }}　CUDA {{ backend.cuda_version }}　TensorRT {{ backend.version }}
+- 输入 / 输出张量：{{ input_shape }} → {{ output_shape }}
 - 生成时间：{{ generated_at }}
 
-## 目录结构
+## 一、快速开始
+
+```bat
+:: Windows：双击 start.bat，或在命令行执行
+start.bat
+```
+```bash
+# Linux / macOS
+./start.sh
+```
+
+脚本会依次做三件事：找到 `bin/` 下的可执行文件 → 用 `model/model.engine` 加载 Engine →
+对 `test/sample.ppm` 跑 5 次推理，结果写入 `result.json`（同时打印到控制台）。
+
+> **Engine 是与平台绑定的**：本 Engine 在 {{ backend.gpu_arch }} / CUDA {{ backend.cuda_version }} 环境构建，
+> 只能在同类环境加载。换机器若报 `Platform specific tag mismatch` 或版本不兼容，
+> 请用 `source/` 重新编译，并在目标机重新构建 Engine。
+
+## 二、目录结构
 
 ```text
 .
-├── CMakeLists.txt          构建脚本（依赖路径已在生成时注入）
-├── config/model.yaml       模型 / 预处理 / 后处理配置（与生成代码同源）
-├── include/qforge/         头文件（公共推理底座 + 任务 + 模型适配器）
-├── src/                    实现
-└── test/                   样例输入说明
+├── start.bat / start.sh    一键启动推理（Windows / Linux-macOS）
+├── README.md               本文件
+├── bin/                    可执行文件（已编译；缺失则需从 source/ 重新编译）
+├── model/
+│   ├── model.engine        推理引擎（{{ precision_label }}，{{ engine_filename }}）
+│   └── engine_metadata.json 构建环境记录（GPU、CUDA、TensorRT 版本、构建耗时、精度）
+├── config/model.yaml       预处理/后处理参数（与生成代码同源）
+├── test/sample.ppm         示例输入图像（PPM P6）与说明
+├── source/                 完整 C++ 源码（可自行重新编译）
+├── docker/                 Dockerfile + entrypoint（容器化部署）
+└── report/                 全部过程报告 + artifact.zip（本压缩包自身）
 ```
 
-## 构建
+## 三、三种运行方式
+
+| 方式 | 命令 | 适用 |
+| --- | --- | --- |
+| 原生 | `start.bat` / `./start.sh` | 目标机装了 TensorRT 运行时（推荐） |
+| 容器 | `docker build -t qforge-infer docker && docker run --rm --gpus all qforge-infer` | 目标机只有 Docker + 显卡驱动 |
+| 重新编译 | 见第七节 | 需要改代码，或平台不匹配 |
+
+## 四、这个推理程序做了什么
+
+`bin/qforge_detector`（源码在 `source/`）是一个**不依赖 OpenCV 的自包含推理程序**，按顺序执行：
+
+1. **加载 Engine**：从 `model/model.engine` 反序列化，创建执行上下文与 CUDA 流；
+   同时打印 Engine 的输入/输出张量形状（用于确认加载成功）。
+   若反序列化失败（版本/平台不匹配），程序会**明确以非零退出码失败**，不会静默继续。
+2. **读取输入**：`--image` 读 PPM(P6) 图片，或用 `--tensor` 读平台预处理好的 float32 裸张量（NCHW）。
+3. **预处理**（参数来自 `config/model.yaml` / `generated_config.h`）：
+   - letterbox 等比缩放并补边到模型输入尺寸（默认 {{ input_shape }}）；
+   - BGR→RGB、归一化（除以 255）、按 mean/std 标准化；
+   - 排成 NCHW 行优先的 float32 张量。
+4. **推理**：把输入从主机内存拷到显存 → `enqueueV3` 执行 → 把输出拷回主机内存。
+   预热 1 次，再按 `--iterations` 计时，因此 `latency_ms_avg` 是**稳态推理时延**。
+5. **后处理（YOLOv8 检测）**：把原始输出 {{ output_shape }} 解码为
+   候选框（4 个坐标 + 每个类别的分数）→ 按置信度阈值过滤 → **NMS** 去重 → 得到最终检测结果。
+6. **输出**：`result.json`（结构化结果）+ 控制台打印；`--dump-raw` 可额外导出原始输出张量。
+
+常用参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--engine <路径>` | Engine 文件（必填） |
+| `--image <路径>` | PPM(P6) 图像输入 |
+| `--tensor <路径>` | float32 裸张量输入（与图像二选一） |
+| `--output <路径>` | 结果 JSON 输出路径（默认打印到标准输出） |
+| `--iterations N` | 计时循环次数（默认 3；start 脚本用 5） |
+| `--dump-raw <路径>` | 导出原始输出张量（float32），用于与平台侧精度对比 |
+| `--restore` | 若输入是平台生成的样例张量，还原其预处理原图信息 |
+
+## 五、输出（result.json）字段
+
+| 字段 | 含义 |
+| --- | --- |
+| `status` | `ok` / `error` |
+| `precision` | {{ precision_label }} |
+| `input_shape` / `output_shape` | Engine 实际张量形状 |
+| `latency_ms_avg` | 平均推理时延（毫秒，已排除首次预热） |
+| `candidates` | 置信度过滤后、NMS 之前的候选框数量 |
+| `detections_count` | NMS 之后的最终检测数量 |
+| `detections` | 检测结果数组（类别、置信度、坐标） |
+| `restored` | 是否按 `--restore` 还原了原图坐标 |
+
+## 六、运行前提
+
+- **NVIDIA 驱动**（版本需支持构建 Engine 时的 CUDA 版本）；
+- **TensorRT 运行库能被执行文件找到**：
+  - Windows：把 TensorRT 的 `bin` 目录加入 `PATH`（或把其中的 DLL 拷到 `bin/` 旁边）；
+  - Linux：把 TensorRT 的 `lib` 目录加入 `LD_LIBRARY_PATH`；
+- 只使用图像输入时**不需要 OpenCV**——PPM 解析与预处理都是程序内实现的。
+
+## 七、从源码重新编译
 
 ```bat
+:: Windows：先进入 VS 命令环境，再构建
 call "<Visual Studio>\VC\Auxiliary\Build\vcvars64.bat"
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
+cmake -S source -B source\build -DCMAKE_BUILD_TYPE=Release
+cmake --build source\build --config Release
 ```
 
-生成产物为 `build/qforge_detector.exe`（Windows 下为 `qforge_detector.exe`）。
-
-## 运行
-
-```bat
-:: 用图像（PPM P6）作为输入，预处理在程序内完成
-qforge_detector.exe --engine {{ engine_filename }} --image test/sample.ppm --restore
-
-:: 或用平台预处理好的张量（float32、NCHW、行优先）
-qforge_detector.exe --engine {{ engine_filename }} --tensor test/sample.f32
+```bash
+# Linux：需要 TensorRT 与 CUDA 开发文件
+cmake -S source -B source/build -DCMAKE_BUILD_TYPE=Release
+cmake --build source/build --parallel
 ```
 
-程序会把结构化结果以 JSON 打印到标准输出（同时可用 `--output` 写入文件）：
+`source/CMakeLists.txt` 会**自动探测** TensorRT/CUDA（也可用 `-DQFORGE_TRT_INCLUDE_DIRS`
+等变量显式注入，见 `source/README.md`）。编译产物为 `qforge_detector(.exe)`，
+可放回 `bin/` 后继续用 `start.bat` / `start.sh`。
 
-- `output_shape` / `input_shape`：Engine 的实际张量形状（用于验证加载是否成功）
-- `latency_ms_avg`：平均推理时延（毫秒，已排除首次预热）
-- `detections`：后处理结果（类别、置信度、坐标）
-- `candidates`：置信度过滤后、NMS 之前的候选数量
+## 八、精度与一致性（重要）
 
-## 预处理一致性（重要）
-
-`include/qforge/generated_config.h` 中的预处理参数与平台 Python 侧完全一致
-（同一份 Model Definition 渲染）。**若修改这里的分辨率、mean/std 或颜色顺序，
-必须同步修改平台侧配置**，否则 INT8 校准与推理输入分布不一致会导致精度下降。
-
-## 输入格式说明
-
-- 图像：二进制 PPM（P6，maxval=255）。用 OpenCV/PIL 转换：
-  `cv2.imwrite("sample.ppm", image)`（Python 侧已由平台自动完成）
-- 张量：纯 float32 裸数据，形状与模型输入一致（NCHW，行优先），可用
-  `numpy.ndarray.tofile()` 生成。
-
-之所以只支持这两种格式，是为了让生成的工程**不依赖 OpenCV 等额外图像库**，
-从而在任何装有 TensorRT + CUDA 运行时的机器上都能直接编译运行。
+`source/include/qforge/generated_config.h` 与平台 Python 侧的预处理参数**同源**（同一份
+Model Definition 渲染）。若修改分辨率、mean/std 或颜色顺序，**必须同步修改平台侧配置**，
+否则 INT8 校准与推理的输入分布不一致，会导致精度下降。精度对比数据见 `report/accuracy.json`。

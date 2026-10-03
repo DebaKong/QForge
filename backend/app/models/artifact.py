@@ -41,6 +41,8 @@ class Artifact(Base):
     relative_path: Mapped[str] = mapped_column(String(512), nullable=False)
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 人类可读的说明（界面直接展示："完整产物归档（解压后跑 start.bat）" 之类）
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )

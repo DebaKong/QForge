@@ -20,6 +20,13 @@ const canEnqueue = computed(() => task.value?.status === 'CREATED')
 const canCancel = computed(
   () => task.value && !['SUCCESS', 'FAILED', 'CANCELLED'].includes(task.value.status),
 )
+// 最终交付物 = zip 归档（解压后可一键启动推理）
+const archive = computed(
+  () =>
+    artifacts.value.find((item) => item.kind === 'archive') ||
+    artifacts.value.find((item) => item.relative_path?.endsWith('artifact.zip')) ||
+    null,
+)
 
 async function loadList() {
   try {
@@ -149,10 +156,28 @@ onUnmounted(() => {
           <el-table-column prop="message" label="消息" min-width="280" />
         </el-table>
 
-        <el-divider content-position="left">产物（Engine / C++ 工程 / 报告 / 归档）</el-divider>
+        <el-divider content-position="left">产物（最终交付物是 zip，解压后跑 start.bat / start.sh）</el-divider>
+        <el-alert
+          v-if="archive"
+          type="success"
+          :closable="false"
+          show-icon
+          style="margin-bottom: 8px"
+        >
+          <template #title>
+            最终交付物：{{ archive.relative_path.split('/').pop() }}（{{ archive.description }}）
+            <a :href="api.artifactDownloadUrl(task.id, archive.id)" style="margin-left: 8px">
+              立即下载
+            </a>
+            <router-link :to="`/artifacts/${task.id}`" style="margin-left: 12px">
+              查看产物页面
+            </router-link>
+          </template>
+        </el-alert>
         <el-table :data="artifacts" max-height="260" empty-text="尚无产物（任务未跑到 PACKAGING 阶段）">
-          <el-table-column prop="kind" label="类型" width="110" />
-          <el-table-column prop="relative_path" label="相对路径" min-width="280" />
+          <el-table-column prop="kind" label="类型" width="100" />
+          <el-table-column prop="description" label="说明" min-width="220" show-overflow-tooltip />
+          <el-table-column prop="relative_path" label="相对路径" min-width="260" show-overflow-tooltip />
           <el-table-column label="大小" width="110">
             <template #default="{ row }">
               {{ row.size_bytes ? (row.size_bytes / 1024).toFixed(1) + ' KB' : '—' }}

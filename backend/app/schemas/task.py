@@ -111,4 +111,5 @@ class ArtifactRead(ORMModel):
     relative_path: str
     size_bytes: int | None
     sha256: str | None
+    description: str | None = None
     created_at: datetime
