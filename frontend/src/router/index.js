@@ -5,6 +5,7 @@ const routes = [
   { path: '/', redirect: '/projects' },
   { path: '/projects', name: 'projects', component: () => import('@/views/ProjectsView.vue') },
   { path: '/upload', name: 'upload', component: () => import('@/views/UploadView.vue') },
+  { path: '/datasets', name: 'datasets', component: () => import('@/views/DatasetsView.vue') },
   { path: '/tasks/new', name: 'task-new', component: () => import('@/views/NewTaskView.vue') },
   { path: '/models/:id?', name: 'models', component: () => import('@/views/ModelDetailView.vue') },
   { path: '/tasks/:id?', name: 'tasks', component: () => import('@/views/TaskDetailView.vue') },

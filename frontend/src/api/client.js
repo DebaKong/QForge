@@ -50,6 +50,16 @@ export const api = {
 
   listDatasets: (projectId) =>
     client.get('/datasets', { params: { project_id: projectId } }).then((r) => r.data),
+  getDataset: (id) => client.get(`/datasets/${id}`).then((r) => r.data),
+  // 数据集管理（SPEC 8.3）：清单与统计、重新校验、批量删除
+  getDatasetInventory: (id, params) =>
+    client.get(`/datasets/${id}/inventory`, { params }).then((r) => r.data),
+  revalidateDataset: (id, params) =>
+    client.post(`/datasets/${id}/revalidate`, null, { params }).then((r) => r.data),
+  deleteDatasets: (datasetIds) =>
+    client.post('/datasets/delete', { dataset_ids: datasetIds }).then((r) => r.data),
+  datasetSampleUrl: (id, path) =>
+    `/api/datasets/${id}/samples?path=${encodeURIComponent(path)}`,
 
   listTasks: (params) => client.get('/tasks', { params }).then((r) => r.data),
   createTask: (payload) => client.post('/tasks', payload).then((r) => r.data),

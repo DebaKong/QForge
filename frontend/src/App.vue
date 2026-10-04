@@ -17,6 +17,7 @@ onMounted(async () => {
 
 const menu = [
   { index: '/projects', label: '项目管理' },
+  { index: '/datasets', label: '数据集管理' },
   { index: '/upload', label: '上传模型与数据' },
   { index: '/tasks/new', label: '新建任务' },
   { index: '/models', label: '模型详情' },
@@ -42,7 +43,7 @@ const menu = [
 
     <el-container>
       <el-header class="app-header">
-        <span class="phase-tag">阶段 1：MVP（2D 检测 + TensorRT）</span>
+        <span class="phase-tag">阶段 2：V1.0（质量与稳定性）</span>
         <span v-if="health" class="health-ok">
           后端正常 · {{ health.environment }} · {{ health.database }} · Celery eager:
           {{ health.celery_eager }}
