@@ -11,14 +11,15 @@
 
 边界（如实记录，不含糊）
 ------------------------
-- **当前状态（实测）**：Q/DQ 图能正常生成（含 QuantizeLinear / DequantizeLinear 节点），但
-  TensorRT 10.16 的 ONNX Parser **仍拒绝** onnxruntime 生成的 Q/DQ 图：
-  已修掉"激活非对称（zero point ≠ 0）"这一条（改为 `ActivationSymmetric=True`），
-  随后卡在 Conv bias 的 `DequantizeLinear` 节点（`INVALID_NODE`）。
-  因此**任务默认仍走 `quantization.mode=calibrator`**（真实 INT8 任务已验证可用），
-  `mode=qdq` 作为显式可选项保留，失败时如实抛 `QuantizationFailedError`，不静默回退。
-- QDQ 图由 onnxruntime 生成，其激活尺度算法与 TensorRT 熵校准**不保证完全一致**；
-  平台保留两条路径，端到端精度都会写在报告里供对比。
+- **让 TensorRT Parser 接受 Q/DQ 图的两个硬要求**（都是实测踩出来的）：
+  1. **激活必须对称**（zero point = 0）：`ActivationSymmetric=True`。否则报
+     `Non-zero zero point is not supported`（非对称量化只在 DLA 上支持）。
+  2. **不要量化 bias**：`QuantizeBias=False`。否则 ORT 会为 Conv bias 生成
+     `DequantizeLinear`，TensorRT 10.16 的 Parser 报 `INVALID_NODE` 直接拒绝。
+- QDQ 图由 onnxruntime 生成，其激活尺度算法与 TensorRT 熵校准不保证一致；
+  两条路径都保留（`quantization.mode=qdq|calibrator`），端到端精度都写进报告供对比。
+  本机实测（真实 yolov8n + 8 张校准图，见 docs/phase-2.md 第 4 节）：Q/DQ 的 MAE / RMSE 约为
+  旧熵校准的 1/2 与 1/3，余弦相似度更高——这是把默认值切到 Q/DQ 的依据。
 - 量化失败必须显式失败（`QuantizationFailedError`），不静默退回旧路径——否则报告会失真。
 """
 
@@ -167,7 +168,13 @@ def quantize(
             # 关键：激活必须是**对称**量化（zero point = 0）。
             # 实测教训：ORT 默认可能给出非零 zero point，TensorRT 解析时会直接报
             # "Non-zero zero point is not supported"（只在 DLA 上才支持非对称量化）。
-            extra_options={"ActivationSymmetric": True, "WeightSymmetric": True},
+            # 其次：**不量化 bias**。实测 TensorRT 10.16 的 Parser 会拒绝 ORT 为 Conv bias
+            # 生成的 DequantizeLinear（INVALID_NODE），关掉 bias 量化后不再产生该节点。
+            extra_options={
+                "ActivationSymmetric": True,
+                "WeightSymmetric": True,
+                "QuantizeBias": False,
+            },
         )
     except Exception as exc:  # noqa: BLE001 - 量化失败必须显式暴露
         result.reason = f"Q/DQ 量化失败（{type(exc).__name__}）：{exc}"

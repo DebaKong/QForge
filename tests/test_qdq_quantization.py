@@ -117,6 +117,33 @@ def test_backend_adapter_accepts_quantized_onnx_path() -> None:
     assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
 
 
+def test_quantize_passes_tensorrt_compatible_options(tmp_path: Path, monkeypatch) -> None:
+    """必须把「对称激活 + 不量化 bias」传下去：这两条都是 TensorRT Parser 的硬要求。
+
+    实测：非对称激活报 "Non-zero zero point is not supported"；bias 的 DequantizeLinear
+    报 INVALID_NODE。回归用例盯住这两个选项，避免以后被人"顺手"改掉。
+    """
+    import onnxruntime.quantization as ort_quant
+
+    captured: dict = {}
+
+    def _capture(*args, **kwargs):  # noqa: ANN002, ANN003
+        captured.update(kwargs)
+        raise RuntimeError("stop-here")  # 只验证参数，不真的量化
+
+    monkeypatch.setattr(ort_quant, "quantize_static", _capture)
+    result = qdq_quantization.quantize(
+        _onnx(tmp_path), tmp_path / "out.onnx", _samples(1), input_name="images"
+    )
+
+    assert result.status == "BLOCKED"  # 上面故意抛错
+    options = captured.get("extra_options") or {}
+    assert options.get("ActivationSymmetric") is True
+    assert options.get("QuantizeBias") is False
+    assert captured.get("quant_format") == ort_quant.QuantFormat.QDQ
+    assert captured.get("activation_type") == ort_quant.QuantType.QInt8
+
+
 def test_entropy_and_percentile_methods_run(tmp_path: Path) -> None:
     """可配置指标：换校准方法也要能跑通（SPEC 9.2 的“可配置”要求）。"""
     for method in ("entropy", "percentile"):

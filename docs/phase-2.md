@@ -7,7 +7,7 @@ SPEC 17 对阶段 2 的要求：**分割、误差分析、算子检测、数据�
 | 批次 | 内容 | 状态 |
 | --- | --- | --- |
 | **2A** | ① 算子兼容性报告 ② 分层误差分析 + 精度报告页 ③ 数据集管理 | **全部完成** |
-| **2C** | INT8 改用 Q/DQ 显式量化（阶段 1 遗留项：当前 EntropyCalibrator2 已 deprecated） | 未开始 |
+| **2C** | INT8 改用 Q/DQ 显式量化（阶段 1 遗留项：当前 EntropyCalibrator2 已 deprecated） | **完成**（实测精度优于旧路径，已设为默认） |
 | **2B** | 语义分割全链路（Adapter + mask 后处理 + C++ 模板 + mIoU 指标 + 合成分割模型回归；联网允许时再拉一个公开小模型） | 未开始 |
 
 ---
@@ -195,3 +195,57 @@ image_count=5；分辨率分布 {64x48: 2, 96x72: 2}；通道 {3: 4}；异常图
 
 - 统计按前 N 张扫描（默认 300），不是全量精确统计（界面已明示）。
 - 尚未提供"数据集图像删除/替换"这类细粒度编辑（当前只有整包上传与整体删除）。
+
+---
+
+## 4. INT8 显式量化（Q/DQ）— 完成
+
+### 4.1 交付内容
+
+| 模块 | 位置 |
+| --- | --- |
+| Q/DQ 量化器（生成带 QuantizeLinear / DequantizeLinear 的 ONNX） | `backend/app/services/qdq_quantization.py` |
+| QUANTIZING 阶段：生成 Q/DQ 图并写 `report/quantization.json` | `backend/app/pipeline/stages/prepare.py` |
+| BUILDING_ENGINE：解析 Q/DQ 图并**不设置校准回调** | `backend/app/adapters/backends/tensorrt_adapter.py`（`quantized_onnx_path`） |
+| 配置入口 | 任务 `quantization: {"mode": "qdq"|"calibrator", "method": "minmax|entropy|percentile", "per_channel": bool}` |
+
+默认 `mode=qdq`；`mode=calibrator` 保留旧熵校准路径用于对比。量化失败抛
+`QuantizationFailedError` 并写明原因，**不静默回退**（否则报告失真）。
+
+### 4.2 让 TensorRT 接受 Q/DQ 图的两个硬要求（实测踩出来的）
+
+1. **激活必须对称量化**（zero point = 0）→ `ActivationSymmetric=True`。
+   否则 TensorRT 报 `Non-zero zero point is not supported`（非对称量化只在 DLA 上支持）。
+2. **不要量化 bias** → `QuantizeBias=False`。
+   否则 onnxruntime 会为 Conv bias 生成 `DequantizeLinear`，TensorRT 10.16 的 ONNX Parser
+   报 `INVALID_NODE` 直接拒绝。
+
+这两条已写进代码注释并用回归用例盯住（`test_quantize_passes_tensorrt_compatible_options`），
+避免以后被"顺手"改掉。
+
+### 4.3 验证证据
+
+纯 CPU 用例 11 项（`tests/test_qdq_quantization.py`）：选图逻辑（含回退分支）、Q/DQ 图确实含
+QuantizeLinear/DequantizeLinear、无样本/未知校准方法/量化器抛异常都返回 BLOCKED、
+校准方法白名单与映射、per_channel 记录、Adapter 接口向后兼容（默认 None）、
+**TensorRT 兼容选项必须被传下去**。全量套件 **226 项通过**。
+
+真实端到端对比（真实 yolov8n + 8 张校准图 + 真实 TensorRT 构建，两次任务都在同一台机器）：
+
+| 路径 | 任务 | MAE | RMSE | 余弦相似度 | 最大绝对误差 |
+| --- | --- | --- | --- | --- | --- |
+| **Q/DQ 显式量化（新默认）** | SUCCESS 52s | **0.254139** | **1.888112** | **0.999512** | **165.002** |
+| IInt8EntropyCalibrator2（旧） | SUCCESS 62s | 0.562972 | 5.197862 | 0.996344 | 301.079 |
+
+Q/DQ 的 MAE 约为旧路径的 **1/2.2**、RMSE 约为 **1/3**、余弦相似度更高——这是把默认值切到
+Q/DQ 的依据。`report/quantization.json` 记录了 `mode=qdq`、校准方法、样本数、Q/DQ 节点统计
+（本机为 245 个 QuantizeLinear / 309 个 DequantizeLinear，总节点 816）与产物大小，
+可证明量化确实发生。
+
+### 4.4 已知限制与后续
+
+- QDQ 图由 onnxruntime 生成，激活尺度算法与 TensorRT 熵校准不同，两者数值不保证可复现一致；
+  换模型/换校准集后建议两条路径都跑一次做对比（报告里都有数据）。
+- 校准方法默认 `minmax`；`entropy` / `percentile` 也可用（用例覆盖），但尚未做质量对比。
+- **混合精度策略（自动把敏感层保留 FP16）**尚未实现——第 2 节的分层误差排序已经给出了
+  "该保留哪些层"的依据，可作为下一步（需 TensorRT 逐层精度设置或 Q/DQ 选择性插入）。

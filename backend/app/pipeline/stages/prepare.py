@@ -277,14 +277,12 @@ def run_quantization(context: PipelineContext) -> None:
         raise CalibrationDataError("INT8 校准缺少可用图像", detail={"task_id": context.task_id})
 
     options = context.task_config.get("quantization") or {}
-    # 默认用 calibrator：Q/DQ 路径已实现并可生成 Q/DQ 图，但**当前 TensorRT 10.16 的 ONNX
-    # Parser 仍拒绝 onnxruntime 生成的 Q/DQ 图**（实测：Conv bias 的 DequantizeLinear 报
-    # INVALID_NODE），因此不能作为默认值，否则 INT8 任务会直接失败。
-    # 想验证 Q/DQ 路径可显式传 quantization.mode=qdq（失败会如实报 QuantizationFailedError）。
-    mode = str(options.get("mode") or "calibrator").lower()
+    # 默认 qdq（显式量化，SPEC 9.1 升级路径，TensorRT 官方推荐）：实测端到端精度明显优于旧熵校准。
+    # 需要与旧路径对比时显式传 quantization.mode=calibrator。
+    mode = str(options.get("mode") or "qdq").lower()
     if mode not in ("qdq", "calibrator"):
-        logger.warning("未知的 quantization.mode=%s，按 calibrator 处理", mode)
-        mode = "calibrator"
+        logger.warning("未知的 quantization.mode=%s，按 qdq 处理", mode)
+        mode = "qdq"
 
     if mode == "calibrator":
         # 旧路径（保留用于对比）：真正的校准发生在 Engine 构建时，由 TensorRT 回调读取校准数据
