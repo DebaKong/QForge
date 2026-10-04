@@ -93,6 +93,24 @@ class BackendAdapter(ABC):
     def availability(self) -> tuple[bool, dict[str, Any]]:
         """返回 (是否可用, 环境信息)。不可用时必须给出可读原因。"""
 
+    def operator_capabilities(
+        self, inspection: dict[str, Any], capability: dict[str, Any]
+    ) -> dict[str, Any]:
+        """算子兼容性报告（SPEC 7.1 步骤 6 / 7.2）。
+
+        默认返回空报告（表示该后端未提供算子能力表）；有注册表的后端覆盖此方法。
+        放在适配器里是为了让"哪个后端支持哪些算子"这种私有知识不出现在通用流水线中
+        （SPEC 3.1 / AGENTS.md：避免 `if backend == ...`）。
+        """
+        return {
+            "operators": [],
+            "summary": {
+                "backend": self.name,
+                "verdict": "UNKNOWN",
+                "reason": "该后端未提供算子能力注册表",
+            },
+        }
+
     @abstractmethod
     def build_engine(
         self,

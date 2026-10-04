@@ -112,6 +112,18 @@ def run_validation(context: PipelineContext) -> None:
         }
         logger.warning("后端不可用，跳过 TensorRT 解析检查：%s", capability["reason"])
 
+    # 算子兼容性报告（SPEC 7.1 步骤 6 / 7.2）：把 ONNX 图算子清单与目标后端的能力表对起来，
+    # 给出 supported / condition / severity / suggestion —— 而不是只报"解析成功/失败"。
+    compatibility = context.backend_adapter.operator_capabilities(context.inspection, capability)
+    compatibility_summary = compatibility.get("summary", {})
+    logger.info(
+        "算子兼容性结论：%s（错误 %s，警告 %s，算子种类 %s）",
+        compatibility_summary.get("verdict"),
+        compatibility_summary.get("error_count"),
+        compatibility_summary.get("warning_count"),
+        compatibility_summary.get("operator_kinds"),
+    )
+
     write_json(
         context.report_file("model_info.json"),
         {
@@ -128,6 +140,9 @@ def run_validation(context: PipelineContext) -> None:
         {
             "task_id": context.task_id,
             "backend": context.backend_name,
+            "operators": compatibility.get("operators", []),
+            "summary": compatibility_summary,
+            # 后端 Parser 的原始细节（网络层数、输入输出、parser 错误）保留，便于排障
             "capability": capability,
         },
     )

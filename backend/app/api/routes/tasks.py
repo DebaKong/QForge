@@ -121,3 +121,29 @@ def get_task_report(task_id: str, session: SessionDep) -> dict:
         "该任务尚无精度验证结果（需先完成到 TESTING 阶段）；FP32/FP16/INT8 三方对比报告属阶段 2",
         detail={"task_id": task_id, "planned_phase": "phase-2"},
     )
+
+
+@router.get(
+    "/{task_id}/compatibility",
+    summary="算子兼容性报告（SPEC 7.2）",
+    description=(
+        "返回该任务的算子兼容性报告：每个算子的 operator / domain / opset / supported / "
+        "condition / severity / suggestion，以及汇总结论（OK / WARNINGS / BLOCKED）。"
+    ),
+)
+def get_task_compatibility(task_id: str, session: SessionDep) -> dict:
+    task_service.get_task(session, task_id)  # 先确认任务存在
+
+    storage_root = get_settings().resolved_storage_root
+    for artifact in task_service.list_artifacts(session, task_id):
+        if not artifact.relative_path.endswith("report/compatibility.json"):
+            continue
+        segments = [segment for segment in artifact.relative_path.split("/") if segment]
+        path = safe_join(storage_root, *segments)
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+
+    raise NotImplementedInPhaseError(
+        "该任务尚无算子兼容性报告（需先完成模型校验阶段）",
+        detail={"task_id": task_id},
+    )

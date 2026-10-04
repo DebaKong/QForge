@@ -12,6 +12,26 @@ const selectedId = ref(route.params.id || '')
 const task = ref(null)
 const logs = ref([])
 const artifacts = ref([])
+// 算子兼容性报告（SPEC 7.2）：未生成时为 null，界面明确说明而不是留空白
+const compatibility = ref(null)
+const problemOperators = computed(() =>
+  (compatibility.value?.operators || []).filter((item) => item.severity !== 'info'),
+)
+const otherOperators = computed(() =>
+  (compatibility.value?.operators || []).filter((item) => item.severity === 'info'),
+)
+
+function verdictType(verdict) {
+  if (verdict === 'BLOCKED') return 'error'
+  if (verdict === 'WARNINGS') return 'warning'
+  return 'success'
+}
+
+function severityType(severity) {
+  if (severity === 'error') return 'danger'
+  if (severity === 'warning') return 'warning'
+  return 'info'
+}
 const transitions = ref(null)
 const autoRefresh = ref(true)
 let timer = null
@@ -46,6 +66,8 @@ async function loadDetail() {
     logs.value = await api.getTaskLogs(selectedId.value)
     transitions.value = await api.getTaskTransitions(selectedId.value)
     artifacts.value = await api.getTaskArtifacts(selectedId.value)
+    // 报告可能还不存在（任务未跑到模型校验阶段 → 501），静默视为"暂无"
+    compatibility.value = await api.getTaskCompatibility(selectedId.value).catch(() => null)
   } catch (error) {
     ElMessage.error(error.message)
   }
@@ -155,6 +177,55 @@ onUnmounted(() => {
           <el-table-column prop="level" label="级别" width="90" />
           <el-table-column prop="message" label="消息" min-width="280" />
         </el-table>
+
+        <el-divider content-position="left">算子兼容性（SPEC 7.2）</el-divider>
+        <template v-if="compatibility">
+          <el-alert
+            :type="verdictType(compatibility.summary?.verdict)"
+            :closable="false"
+            show-icon
+            :title="`结论：${compatibility.summary?.verdict}　错误 ${compatibility.summary?.error_count ?? 0} / 警告 ${compatibility.summary?.warning_count ?? 0}　算子种类 ${compatibility.summary?.operator_kinds ?? 0}　opset ${compatibility.summary?.opset ?? '—'}`"
+          />
+          <el-table
+            :data="problemOperators"
+            size="small"
+            style="margin-top: 8px"
+            empty-text="没有需要关注的算子（其余算子无风险提示）"
+          >
+            <el-table-column prop="operator" label="算子" width="150" />
+            <el-table-column prop="opset" label="opset" width="70" />
+            <el-table-column label="支持" width="80">
+              <template #default="{ row }">
+                <el-tag :type="row.supported ? 'success' : 'danger'" size="small">
+                  {{ row.supported ? '是' : '否' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="级别" width="90">
+              <template #default="{ row }">
+                <el-tag :type="severityType(row.severity)" size="small">{{ row.severity }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="occurrences" label="出现" width="70" />
+            <el-table-column prop="condition" label="限制条件" min-width="200" show-overflow-tooltip />
+            <el-table-column prop="suggestion" label="建议" min-width="240" show-overflow-tooltip />
+          </el-table>
+          <el-collapse v-if="otherOperators.length" style="margin-top: 8px">
+            <el-collapse-item :title="`其余 ${otherOperators.length} 个算子（无风险提示）`">
+              <el-table :data="otherOperators" size="small">
+                <el-table-column prop="operator" label="算子" min-width="150" />
+                <el-table-column prop="domain" label="domain" width="110" />
+                <el-table-column prop="occurrences" label="出现次数" width="100" />
+              </el-table>
+            </el-collapse-item>
+          </el-collapse>
+        </template>
+        <el-alert
+          v-else
+          type="info"
+          :closable="false"
+          title="尚无算子兼容性报告（任务需先完成模型校验阶段）"
+        />
 
         <el-divider content-position="left">产物（最终交付物是 zip，解压后跑 start.bat / start.sh）</el-divider>
         <el-alert

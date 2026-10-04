@@ -59,6 +59,8 @@ export const api = {
   getTaskLogs: (id) => client.get(`/tasks/${id}/logs`).then((r) => r.data),
   getTaskArtifacts: (id) => client.get(`/tasks/${id}/artifacts`).then((r) => r.data),
   getTaskReport: (id) => client.get(`/tasks/${id}/report`).then((r) => r.data),
+  // 算子兼容性报告（SPEC 7.2）：任务未跑到模型校验阶段时后端返回 501
+  getTaskCompatibility: (id) => client.get(`/tasks/${id}/compatibility`).then((r) => r.data),
   artifactDownloadUrl: (taskId, artifactId) =>
     `/api/tasks/${taskId}/artifacts/${artifactId}/download`,
   enqueueTask: (id) => client.post(`/tasks/${id}/enqueue`).then((r) => r.data),

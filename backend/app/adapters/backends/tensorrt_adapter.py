@@ -28,7 +28,7 @@ from typing import Any, Sequence
 import numpy as np
 
 from app.adapters.base import BackendAdapter, ModelAdapter
-from app.adapters.backends import cuda_memory
+from app.adapters.backends import cuda_memory, tensorrt_capabilities
 from app.adapters.definition import ModelDefinition
 from app.adapters.registry import register_backend_adapter
 from app.errors import (
@@ -293,6 +293,23 @@ class TensorRTAdapter(BackendAdapter):
             }
         finally:
             delegate.close()
+
+    def operator_capabilities(
+        self, inspection: dict[str, Any], capability: dict[str, Any]
+    ) -> dict[str, Any]:
+        """算子兼容性报告（SPEC 7.1 步骤 6 / 7.2）。
+
+        ONNX 图算子清单来自 `inspection`，后端解析结果来自 `capability`：
+        Parser 通过则以实测为准，失败时未登记算子按 error 提示查阅支持矩阵。
+        """
+        report = tensorrt_capabilities.evaluate(
+            list(inspection.get("operators") or []),
+            opset=inspection.get("opset"),
+            backend_name=self.name,
+            backend_version=capability.get("backend_version"),
+            parser_accepted=bool(capability.get("parsed")),
+        )
+        return report.to_dict()
 
     # ---------------- Engine 构建 ----------------
 
