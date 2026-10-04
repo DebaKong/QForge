@@ -213,3 +213,40 @@ def test_main_cli_writes_assets(tmp_path: Path, capsys) -> None:
     output = capsys.readouterr().out
     assert "model:" in output and "reference_mask:" in output
     assert (tmp_path / "cli" / "segmentation_16_c2.onnx").is_file()
+
+
+def test_agreement_metrics_identical_masks_score_one() -> None:
+    """引擎与基线完全相同 → 一致度必须是满分（无标注场景的定量检查）。"""
+    labels = reference_mask(32, class_count=3, bands=3)
+    logits = _logits(labels, 3)
+
+    metrics = segmentation.agreement_metrics(logits, logits, class_count=3)
+
+    assert metrics["mean_iou"] == pytest.approx(1.0)
+    assert metrics["mean_dice"] == pytest.approx(1.0)
+    assert metrics["pixel_accuracy"] == pytest.approx(1.0)
+    assert "非人工标注真值" in metrics["baseline"]
+    assert "不是与人工标注的精度" in metrics["note"]
+
+
+def test_agreement_metrics_detects_mask_drift() -> None:
+    """引擎掩膜漂移时必须反映到指标上（否则这份检查毫无意义）。"""
+    labels = reference_mask(32, class_count=3, bands=3)
+    drifted = labels.copy()
+    drifted[:, :16] = (drifted[:, :16] + 1) % 3  # 左半部分整体漂到相邻类
+
+    metrics = segmentation.agreement_metrics(
+        _logits(drifted, 3), _logits(labels, 3), class_count=3
+    )
+
+    assert 0.0 < metrics["mean_iou"] < 1.0
+    assert metrics["pixel_accuracy"] == pytest.approx(0.5, abs=1e-6)
+
+
+def test_agreement_metrics_rejects_shape_mismatch() -> None:
+    with pytest.raises(ValueError):
+        segmentation.agreement_metrics(
+            _logits(np.zeros((8, 8), dtype=np.int32), 2),
+            _logits(np.zeros((16, 16), dtype=np.int32), 2),
+            class_count=2,
+        )

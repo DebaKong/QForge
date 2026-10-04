@@ -250,3 +250,38 @@ def evaluate_outputs(
     )
     metrics["postprocess"] = result.to_dict()
     return metrics
+
+
+def agreement_metrics(
+    output: np.ndarray,
+    baseline_output: np.ndarray,
+    *,
+    class_count: int,
+    ignore_index: int | None = None,
+) -> dict[str, Any]:
+    """**无标注**场景下的分割定量检查：引擎掩膜与 FP32 基线掩膜的一致度。
+
+    为什么这样做：平台的校准/样例数据是**未标注图像**（SPEC 8.2），拿不到真值掩膜，
+    因此和检测路径用 MAE/RMSE 对比张量一样，这里把 FP32 基线的 argmax 结果当作参照，
+    用 IoU / Dice / 像素一致率衡量"精度模式带来的掩膜变化"。
+    有标注数据时请改用 `evaluate_masks`（真值对比），两者的指标定义完全一致。
+    """
+    engine = postprocess_mask(output, class_count=class_count, ignore_index=ignore_index)
+    baseline = postprocess_mask(
+        baseline_output, class_count=class_count, ignore_index=ignore_index
+    )
+    if engine.labels.shape != baseline.labels.shape:
+        raise ValueError(
+            "引擎与基线的掩膜形状不一致："
+            f"{engine.labels.shape} vs {baseline.labels.shape}"
+        )
+
+    metrics = evaluate_masks(
+        baseline.labels, engine.labels, class_count=class_count, ignore_index=ignore_index
+    )
+    metrics["baseline"] = "onnxruntime CPU FP32（argmax 掩膜作为参照，非人工标注真值）"
+    metrics["note"] = (
+        "无标注数据下的一致性检查：指标含义是「引擎掩膜与 FP32 基线掩膜的吻合度」，"
+        "不是与人工标注的精度；有标注时请用 evaluate_masks 做真值对比"
+    )
+    return metrics

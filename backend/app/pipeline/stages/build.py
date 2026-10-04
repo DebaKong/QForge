@@ -36,6 +36,7 @@ from app.pipeline.context import PipelineContext
 from app.pipeline.stages.prepare import record_artifact, write_json
 from app.services import opencv_dev, toolchain
 from app.services import layer_error_analysis
+from app.services import segmentation
 from app.services.layout import place_input_file
 
 logger = logging.getLogger("qforge.pipeline")
@@ -402,7 +403,7 @@ def _verify_with_python(context: PipelineContext) -> dict[str, Any]:
         metrics["cosine_similarity"],
         latency_ms,
     )
-    return {
+    payload: dict[str, Any] = {
         "status": "SUCCESS",
         "method": "TensorRT Python API（加载 Engine + 真实推理）",
         "engine": context.engine_path.name,
@@ -411,6 +412,22 @@ def _verify_with_python(context: PipelineContext) -> dict[str, Any]:
         "decode": decode.summary(),
         "accuracy": metrics,
     }
+
+    # 分割任务：张量级 MAE/RMSE 之外，再给一份**掩膜级**一致度（SPEC 2.2 的精度要求）。
+    # 校准/样例数据没有标注真值，因此以 FP32 基线的 argmax 掩膜为参照（与 MAE 同精神）。
+    if context.definition.task == "segmentation":
+        payload["segmentation"] = segmentation.agreement_metrics(
+            outputs[0],
+            baseline,
+            class_count=context.definition.output.class_count,
+            ignore_index=context.definition.postprocessing.ignore_index,
+        )
+        logger.info(
+            "分割掩膜一致度：mIoU=%s 像素一致率=%s",
+            payload["segmentation"].get("mean_iou"),
+            payload["segmentation"].get("pixel_accuracy"),
+        )
+    return payload
 
 
 def _verify_generated_program(context: PipelineContext) -> dict[str, Any]:
@@ -433,11 +450,25 @@ def _verify_generated_program(context: PipelineContext) -> dict[str, Any]:
 
     result_json = test_dir / "result.json"
     dumped_raw = test_dir / "engine_output.f32"
+    mask_target = test_dir / "mask.ppm"
 
-    completed = _run_executable(
-        context,
-        context.executable_path,
-        [
+    # 命令行按**任务类型**分派：分割程序不接受 --dump-raw/--restore（它输出掩膜不是原始张量），
+    # 检测程序则用原始张量做精度对照。实测踩过：给分割程序传 --dump-raw 会直接报"未知参数"。
+    if context.definition.task == "segmentation":
+        arguments = [
+            "--engine",
+            str(context.engine_path),
+            "--image",
+            str(ppm_target),
+            "--output",
+            str(result_json),
+            "--mask",
+            str(mask_target),
+            "--iterations",
+            "3",
+        ]
+    else:
+        arguments = [
             "--engine",
             str(context.engine_path),
             "--image",
@@ -449,7 +480,12 @@ def _verify_generated_program(context: PipelineContext) -> dict[str, Any]:
             "--restore",
             "--iterations",
             "3",
-        ],
+        ]
+
+    completed = _run_executable(
+        context,
+        context.executable_path,
+        arguments,
         log_name="runtime_test.log",
     )
 
@@ -467,36 +503,77 @@ def _verify_generated_program(context: PipelineContext) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise RuntimeTestFailedError("程序输出不是合法 JSON", detail={"error": str(exc)}) from exc
 
-    # SPEC 11.3 步骤 6：输出张量存在且 shape 正确
-    expected_elements = int(np.prod(context.definition.output.shape)) if context.definition.output.shape else 0
-    reported = int(payload.get("output_elements") or 0)
-    if reported <= 0:
-        raise RuntimeTestFailedError("程序报告的输出张量为空", detail={"payload": payload})
-    if expected_elements and reported != expected_elements:
-        # YOLOv8 导出常见 [1,84,8400]；若不一致说明 Engine 输出与模型定义不符
-        raise RuntimeTestFailedError(
-            "程序报告的输出元素数与模型定义不一致",
-            detail={"expected": expected_elements, "reported": reported},
-        )
-
-    # SPEC 11.3 步骤 7：目标检测后处理结构合法
-    class_count = context.definition.output.class_count
-    detections = payload.get("detections") or []
-    for detection in detections:
-        box = detection.get("box") or []
-        score = detection.get("score")
-        class_id = detection.get("class_id")
-        if len(box) != 4 or not all(np.isfinite(box)):
-            raise RuntimeTestFailedError("检测框结构非法", detail={"detection": detection})
-        if score is None or not (0.0 <= float(score) <= 1.0):
-            raise RuntimeTestFailedError("检测置信度越界", detail={"detection": detection})
-        if class_id is None or not (0 <= int(class_id) < class_count):
+    # SPEC 11.3 步骤 6~7：输出结构按**任务类型**校验
+    if context.definition.task == "segmentation":
+        # 分割程序输出的字段是 mask_shape / class_histogram / ignored_pixels（没有框）
+        mask_shape = payload.get("mask_shape") or []
+        if len(mask_shape) != 2 or min(int(mask_shape[0]), int(mask_shape[1])) <= 0:
             raise RuntimeTestFailedError(
-                "检测类别号越界", detail={"detection": detection, "class_count": class_count}
+                "分割程序报告的掩膜形状非法", detail={"mask_shape": mask_shape, "payload": payload}
+            )
+        histogram = payload.get("class_histogram") or {}
+        class_count = context.definition.output.class_count
+        for key in histogram:
+            if not (0 <= int(key) < class_count):
+                raise RuntimeTestFailedError(
+                    "分割类别号越界", detail={"class_id": key, "class_count": class_count}
+                )
+        # 直方图 + 忽略像素必须覆盖全部像素（否则统计漏了像素）
+        counted = sum(int(value) for value in histogram.values()) + int(
+            payload.get("ignored_pixels") or 0
+        )
+        pixels = int(mask_shape[0]) * int(mask_shape[1])
+        if counted != pixels:
+            raise RuntimeTestFailedError(
+                "分割掩膜统计与像素总数不一致",
+                detail={"counted": counted, "pixels": pixels, "payload": payload},
+            )
+    else:
+        expected_elements = (
+            int(np.prod(context.definition.output.shape)) if context.definition.output.shape else 0
+        )
+        reported = int(payload.get("output_elements") or 0)
+        if reported <= 0:
+            raise RuntimeTestFailedError("程序报告的输出张量为空", detail={"payload": payload})
+        if expected_elements and reported != expected_elements:
+            # YOLOv8 导出常见 [1,84,8400]；若不一致说明 Engine 输出与模型定义不符
+            raise RuntimeTestFailedError(
+                "程序报告的输出元素数与模型定义不一致",
+                detail={"expected": expected_elements, "reported": reported},
             )
 
+        # SPEC 11.3 步骤 7：目标检测后处理结构合法
+        class_count = context.definition.output.class_count
+        detections = payload.get("detections") or []
+        for detection in detections:
+            box = detection.get("box") or []
+            score = detection.get("score")
+            class_id = detection.get("class_id")
+            if len(box) != 4 or not all(np.isfinite(box)):
+                raise RuntimeTestFailedError("检测框结构非法", detail={"detection": detection})
+            if score is None or not (0.0 <= float(score) <= 1.0):
+                raise RuntimeTestFailedError("检测置信度越界", detail={"detection": detection})
+            if class_id is None or not (0 <= int(class_id) < class_count):
+                raise RuntimeTestFailedError(
+                    "检测类别号越界", detail={"detection": detection, "class_count": class_count}
+                )
+
     cpp_accuracy: dict[str, Any] | None = None
-    if dumped_raw.exists() and tensor_target.exists():
+    segmentation_metrics: dict[str, Any] | None = None
+    if context.definition.task == "segmentation":
+        # 分割：程序应导出掩膜图；存在即说明 C++ 侧后处理真的执行了（内容由上面的像素统计校验）
+        segmentation_metrics = {
+            "mask_file": mask_target.name,
+            "mask_written": mask_target.exists(),
+            "class_histogram": payload.get("class_histogram") or {},
+            "ignored_pixels": int(payload.get("ignored_pixels") or 0),
+            "note": "掩膜一致度（与 FP32 基线）在 Python 侧验证里给出；C++ 侧校验结构与像素统计",
+        }
+        if not mask_target.exists():
+            raise RuntimeTestFailedError(
+                "分割程序没有导出掩膜文件", detail={"expected": str(mask_target)}
+            )
+    elif dumped_raw.exists() and tensor_target.exists():
         engine_output = np.fromfile(dumped_raw, dtype=np.float32).reshape(
             context.definition.output.shape
         )
@@ -514,6 +591,7 @@ def _verify_generated_program(context: PipelineContext) -> dict[str, Any]:
         "returncode": completed.returncode,
         "result": payload,
         "accuracy": cpp_accuracy,
+        "segmentation": segmentation_metrics,
         "log": "logs/runtime_test.log",
     }
 
@@ -623,6 +701,8 @@ def run_testing(context: PipelineContext) -> None:
             "task_id": context.task_id,
             "precision": context.precision,
             "engine_vs_fp32_baseline": python_verification["accuracy"],
+            # 分割任务额外给出掩膜级一致度（mIoU / Dice / 像素一致率）
+            "segmentation_agreement": python_verification.get("segmentation"),
             "cpp_program_vs_fp32_baseline": (cpp_verification or {}).get("accuracy"),
             "note": "FP32 基准 = onnxruntime CPU 推理；FP16/INT8 均以 FP32 为基准，不混称",
         },

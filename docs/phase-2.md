@@ -263,8 +263,8 @@ SPEC 2.2 把「语义分割」列为 V1.0 扩展。检测与分割的后处理�
 | 合成分割模型 + 可命令行再生的回归资产（模型 + 真值掩膜） | `tools/synth_segmentation.py` | 完成 |
 | 分割 Model Adapter（`unet` / `segmentation`） | `backend/app/adapters/models/unet.py` | 完成 |
 | 分割版 C++ 工程模板（输出掩膜 + 统计，保留实时/推送） | `backend/app/codegen/templates/task/segmentation/` | 完成（掩膜 PPM 输出 + JSON + 推送；实时摄像头循环未接） |
-| 流水线接线（分割任务的运行验证/精度报告写 mIoU） | `backend/app/pipeline/stages/` | 待做 |
-| 端到端回归（生成 → 编译 → 推理 → mIoU 报告） | `tests/`（GPU 标记） | 待做 |
+| 流水线接线（分割任务的运行验证/精度报告写 mIoU） | `backend/app/pipeline/stages/build.py` | 完成 |
+| 端到端回归（生成 → 编译 → 推理 → mIoU 报告） | 合成分割模型实跑 | 完成（INT8 + Q/DQ + 编译 + C++ 掩膜；21s SUCCESS） |
 
 ### 5.1 已完成部分的关键决策
 
@@ -291,9 +291,33 @@ argmax 正确性与维度校验、最近邻不插值、**手算核对 IoU/Dice/�
 letterbox 给警告、`decode` 产出掩膜与类别直方图、`DecodeResult` 检测字段不回归、
 **API 放行 `task_type=segmentation`**。全量套件通过。
 
-### 5.3 已知限制（本批次）
+### 5.3 验证证据（端到端）
 
-- **分割任务的真实 Engine 构建与端到端回归尚未跑过**：流水线里仍有检测专用的后处理/报告分支，
-  需要用合成分割模型跑通"生成 → 编译 → 推理 → mIoU 报告"后才能宣称 2B 完成。
-- 尚未接 C++ 代码生成的分割模板（当前生成器只有检测模板）。
-- 尚未用真实公开分割模型验证泛化性（联网允许时补）。
+**合成分割模型实跑一次完整流水线**（`architecture=unet`、`task_type=segmentation`、**INT8 + Q/DQ**、
+`cpp_build=required`），结果 **SUCCESS（21 秒）**：
+
+```text
+分割一致度（INT8 引擎掩膜 vs FP32 基线掩膜）：mIoU=0.942551  Dice=0.96987  像素一致率=0.991211
+accuracy.json          含 segmentation_agreement（逐类 IoU/Dice + 混淆矩阵）
+runtime_verification   含分割块；cpp_program_verification.status=SUCCESS（C++ 掩膜文件已导出）
+quantization.json      mode=qdq
+交付 zip               source/src/segmenter.cpp 存在，source/src/detector.cpp 不存在
+```
+
+流水线接线做了两件事：
+1. **Python 侧验证**（`_verify_with_python`）：分割任务在张量级 MAE/RMSE 之外，额外算
+   **掩膜一致度**（`segmentation.agreement_metrics`）——校准/样例数据没有标注真值（SPEC 8.2），
+   所以以 FP32 基线的 argmax 掩膜为参照，和检测路径用 MAE 对比张量同一个精神；
+   指标里明确写清"这不是与人工标注的精度"（有标注时应改用 `evaluate_masks`）。
+2. **C++ 程序验证**（`_verify_generated_program`）：命令行与结构校验都按任务类型分派——
+   分割程序传 `--mask`（导出掩膜）而不是 `--dump-raw/--restore`，校验 `mask_shape`、
+   类别号范围、以及「直方图 + 忽略像素 = 总像素数」。实测踩过：给分割程序传 `--dump-raw`
+   会直接报"未知参数"（21s 的链路就是在这一步失败过一次）。
+
+### 5.4 已知限制（本批次仍需说明）
+
+- 分割任务**没有实时摄像头循环与掩膜预览**（分割工程里没有 `--camera/--display`）。
+- **尚未用真实公开分割模型验证泛化性**：本轮网络到 GitHub/SourceForge 一直超时/重置，
+  公开模型下载未能完成；合成分割模型已覆盖全链路回归。这一项仍是"联网允许时"的可选项。
+- 分割的类别直方图/掩膜一致度是**无标注**口径；要报"与人工标注的 mIoU"需要带标注的测试集，
+  平台侧的 `evaluate_masks` 已就绪，接数据即可。
