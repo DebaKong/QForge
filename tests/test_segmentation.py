@@ -178,3 +178,38 @@ def test_synthetic_model_is_deterministic(tmp_path: Path) -> None:
     first = build_segmentation_onnx(tmp_path / "a.onnx", input_size=32, seed=7)
     second = build_segmentation_onnx(tmp_path / "b.onnx", input_size=32, seed=7)
     assert first.read_bytes() == second.read_bytes()
+
+
+def test_write_regression_assets_produces_usable_model_and_mask(tmp_path: Path) -> None:
+    """回归资产要能直接跑：模型可被 onnxruntime 加载，真值掩膜可被新模块评估。"""
+    import onnxruntime as ort
+
+    from tools.synth_segmentation import write_regression_assets
+
+    assets = write_regression_assets(tmp_path / "assets", input_size=32, class_count=3)
+
+    assert assets["model"].is_file() and assets["reference_mask"].is_file()
+    session = ort.InferenceSession(str(assets["model"]), providers=["CPUExecutionProvider"])
+    assert session.get_outputs()[0].shape[1] == 3
+
+    reference = np.load(assets["reference_mask"])
+    assert reference.shape == (32, 32) and reference.dtype == np.int32
+
+    # 用真值构造满分预测：mIoU 必须是 1（证明资产与指标模块配套可用）
+    metrics = segmentation.evaluate_masks(reference, reference, class_count=3, ignore_index=None)
+    assert metrics["mean_iou"] == pytest.approx(1.0)
+    assert metrics["evaluated_pixels"] == 32 * 32
+
+
+def test_main_cli_writes_assets(tmp_path: Path, capsys) -> None:
+    """命令行入口可用（下一轮端到端回归脚本直接调它再生模型）。"""
+    from tools import synth_segmentation
+
+    code = synth_segmentation.main(
+        ["--out", str(tmp_path / "cli"), "--input-size", "16", "--class-count", "2"]
+    )
+
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "model:" in output and "reference_mask:" in output
+    assert (tmp_path / "cli" / "segmentation_16_c2.onnx").is_file()

@@ -113,3 +113,59 @@ def reference_mask(
     columns = np.arange(input_size)
     labels = (columns * bands // input_size) % class_count
     return np.tile(labels.astype(np.int32), (input_size, 1))
+
+
+def write_regression_assets(
+    output_dir: Path,
+    *,
+    input_size: int = 64,
+    class_count: int = 3,
+    bands: int = 3,
+    seed: int = 0,
+) -> dict[str, Path]:
+    """生成一套分割回归资产：模型 + 真值掩膜（供流水线/测试直接使用）。
+
+    返回 `{"model": ..., "reference_mask": ...}`；真值掩膜存成 `.npy`（dtype=int32），
+    便于后续端到端回归脚本直接 `np.load` 后与新模块的指标对比。
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model_path = build_segmentation_onnx(
+        output_dir / f"segmentation_{input_size}_c{class_count}.onnx",
+        input_size=input_size,
+        class_count=class_count,
+        seed=seed,
+    )
+    mask = reference_mask(
+        input_size, class_count=class_count, bands=bands, seed=seed
+    )
+    mask_path = output_dir / f"reference_mask_{input_size}_c{class_count}.npy"
+    np.save(mask_path, mask)
+    return {"model": model_path, "reference_mask": mask_path}
+
+
+def main(argv: list[str] | None = None) -> int:
+    """命令行入口：`python -m tools.synth_segmentation --out dist/seg` 再生回归资产。"""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="生成合成分割模型与真值掩膜（回归用）")
+    parser.add_argument("--out", required=True, help="输出目录")
+    parser.add_argument("--input-size", type=int, default=64)
+    parser.add_argument("--class-count", type=int, default=3)
+    parser.add_argument("--bands", type=int, default=3)
+    parser.add_argument("--seed", type=int, default=0)
+    args = parser.parse_args(argv)
+
+    assets = write_regression_assets(
+        Path(args.out),
+        input_size=args.input_size,
+        class_count=args.class_count,
+        bands=args.bands,
+        seed=args.seed,
+    )
+    for name, path in assets.items():
+        print(f"{name}: {path}")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - 命令行入口
+    raise SystemExit(main())
