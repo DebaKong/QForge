@@ -42,11 +42,16 @@ class Detection:
 
 @dataclass
 class DecodeResult:
-    """解码 + NMS 的结果，用于运行验证与精度报告。"""
+    """解码结果，用于运行验证与精度报告。
+
+    检测路径用 `detections` / `candidates`；分割路径（逐像素 argmax 出掩膜）把掩膜统计放进
+    `extra`（掩膜形状、类别直方图、忽略像素数），`summary()` 会一并输出，两边互不影响。
+    """
 
     detections: list[Detection] = field(default_factory=list)
     raw_shape: tuple[int, ...] = ()
     candidates: int = 0
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -54,6 +59,7 @@ class DecodeResult:
             "candidates": self.candidates,
             "detections": len(self.detections),
             "preview": [item.to_dict() for item in self.detections[:10]],
+            **self.extra,
         }
 
 

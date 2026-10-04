@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 # 精度模式（SPEC 9）：FP32 基准 / FP16 半精度 / INT8 静态量化，不得混称
 PRECISION_MODES: tuple[str, ...] = ("fp32", "fp16", "int8")
-TASK_TYPES: tuple[str, ...] = ("detection",)
+TASK_TYPES: tuple[str, ...] = ("detection", "segmentation")  # 分割：SPEC 2.2 的 V1.0 扩展
 
 _status_column = Enum(
     TaskStatus,

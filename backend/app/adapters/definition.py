@@ -277,6 +277,8 @@ class OutputSpec:
 class PostprocessSpec:
     decoder: str
     nms: NmsSpec = field(default_factory=NmsSpec)
+    # 分割专用：不参与评估的标签值（Pascal VOC / Cityscapes 常用 255）；检测任务恒为 None
+    ignore_index: int | None = None
 
     @classmethod
     def parse(cls, payload: dict[str, Any] | None) -> "PostprocessSpec":
@@ -284,10 +286,20 @@ class PostprocessSpec:
         decoder = str(payload.get("decoder", "yolov8")).lower()
         if not decoder:
             raise PreprocessConfigError("postprocessing.decoder 必填")
-        return cls(decoder=decoder, nms=NmsSpec.parse(payload.get("nms")))
+        raw_ignore = payload.get("ignore_index")
+        ignore_index = int(raw_ignore) if raw_ignore is not None else None
+        return cls(
+            decoder=decoder,
+            nms=NmsSpec.parse(payload.get("nms")),
+            ignore_index=ignore_index,
+        )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"decoder": self.decoder, "nms": self.nms.to_dict()}
+        return {
+            "decoder": self.decoder,
+            "nms": self.nms.to_dict(),
+            "ignore_index": self.ignore_index,
+        }
 
 
 @dataclass

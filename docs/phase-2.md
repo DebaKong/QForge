@@ -8,7 +8,7 @@ SPEC 17 对阶段 2 的要求：**分割、误差分析、算子检测、数据�
 | --- | --- | --- |
 | **2A** | ① 算子兼容性报告 ② 分层误差分析 + 精度报告页 ③ 数据集管理 | **全部完成** |
 | **2C** | INT8 改用 Q/DQ 显式量化（阶段 1 遗留项：当前 EntropyCalibrator2 已 deprecated） | **完成**（实测精度优于旧路径，已设为默认） |
-| **2B** | 语义分割全链路（Adapter + mask 后处理 + C++ 模板 + mIoU 指标 + 合成分割模型回归；联网允许时再拉一个公开小模型） | 未开始 |
+| **2B** | 语义分割全链路（Adapter + mask 后处理 + C++ 模板 + mIoU 指标 + 合成分割模型回归；联网允许时再拉一个公开小模型） | 🚧 进行中：后处理/指标/合成分割模型/**Model Adapter** 已完成；C++ 模板与流水线接线待做 |
 
 ---
 
@@ -249,3 +249,51 @@ Q/DQ 的依据。`report/quantization.json` 记录了 `mode=qdq`、校准方法�
 - 校准方法默认 `minmax`；`entropy` / `percentile` 也可用（用例覆盖），但尚未做质量对比。
 - **混合精度策略（自动把敏感层保留 FP16）**尚未实现——第 2 节的分层误差排序已经给出了
   "该保留哪些层"的依据，可作为下一步（需 TensorRT 逐层精度设置或 Q/DQ 选择性插入）。
+
+---
+
+## 5. 语义分割（2B，进行中）
+
+SPEC 2.2 把「语义分割」列为 V1.0 扩展。检测与分割的后处理语义完全不同（检测出框 + NMS，
+分割逐像素 argmax 出掩膜），因此分三步做，**已完成前三项**：
+
+| 项 | 位置 | 状态 |
+| --- | --- | --- |
+| 掩膜后处理 + mIoU/IoU/Dice/像素准确率 | `backend/app/services/segmentation.py` | 完成 |
+| 合成分割模型 + 可命令行再生的回归资产（模型 + 真值掩膜） | `tools/synth_segmentation.py` | 完成 |
+| 分割 Model Adapter（`unet` / `segmentation`） | `backend/app/adapters/models/unet.py` | 完成 |
+| 分割版 C++ 工程模板（输出掩膜 + 统计，保留实时/推送） | `backend/app/codegen/templates/task/segmentation/` | 待做 |
+| 流水线接线（分割任务的运行验证/精度报告写 mIoU） | `backend/app/pipeline/stages/` | 待做 |
+| 端到端回归（生成 → 编译 → 推理 → mIoU 报告） | `tests/`（GPU 标记） | 待做 |
+
+### 5.1 已完成部分的关键决策
+
+1. **不猜后处理语义**：分割的 `postprocessing.decoder` 必须是 `argmax`（或架构名 `unet`），
+   由适配器显式声明，而不是从 ONNX shape 反推（AGENTS.md 明确禁止用 shape 猜后处理）。
+   检测的 `decoder=yolov8` 用在分割任务上会被**拒绝**（有用例）。
+2. **指标按整批累积混淆矩阵计算**（不是每张图算完取平均），并且 `ignore_index`（默认 255）
+   在分子分母里**完全排除**；真值与预测都没出现的类别不参与 mIoU 平均，
+   但"被预测到却不在真值里"的类别必须计入（IoU=0），否则假正例会凭空消失。
+3. **输入不是 4D 直接报错**（不猜也不静默算错）；标签缩放用**最近邻**（标签不能插值）。
+4. **接口向后兼容**：分割的掩膜统计放在 `DecodeResult.extra`，`summary()` 一并输出；
+   检测路径的 `detections` / `candidates` / `preview` 字段保持不变（有用例盯住）。
+5. **任务类型白名单**放行 `segmentation`（`app/models/task.py` 的 `TASK_TYPES`）。
+   这使既有的"不支持的任务类型"用例失效，已把该用例改用一个确实不支持的值（`classification`）——
+   是能力变化导致的期望更新，不是放宽断言。
+
+### 5.2 验证证据
+
+纯 CPU 用例 **28 项**（`tests/test_segmentation.py` 15 项 + `tests/test_segmentation_adapter.py` 13 项）：
+argmax 正确性与维度校验、最近邻不插值、**手算核对 IoU/Dice/准确率**、忽略像素完全排除、
+空类不参与平均、混淆矩阵维度校验、合成分割模型 onnxruntime 端到端（满分 → mIoU=1；
+故意错一半 → 准确率 0.5 且 0<mIoU<1）、同 seed 模型逐字节一致、回归资产可命令行再生；
+适配器注册与默认定义、`validate` 拒绝错误任务/错误 decoder、通道数不一致给警告、
+letterbox 给警告、`decode` 产出掩膜与类别直方图、`DecodeResult` 检测字段不回归、
+**API 放行 `task_type=segmentation`**。全量套件通过。
+
+### 5.3 已知限制（本批次）
+
+- **分割任务的真实 Engine 构建与端到端回归尚未跑过**：流水线里仍有检测专用的后处理/报告分支，
+  需要用合成分割模型跑通"生成 → 编译 → 推理 → mIoU 报告"后才能宣称 2B 完成。
+- 尚未接 C++ 代码生成的分割模板（当前生成器只有检测模板）。
+- 尚未用真实公开分割模型验证泛化性（联网允许时补）。

@@ -81,9 +81,10 @@ def test_create_model_persists_definition_and_rejects_duplicate_name(client: Tes
 
 def test_create_model_rejects_unsupported_task_type(client: TestClient) -> None:
     project = _create_project(client)
+    # 注意：segmentation 自阶段 2 起已受支持（SPEC 2.2），这里改用确实不支持的分类任务
     response = client.post(
         "/api/models",
-        json={"project_id": project["id"], "name": "m", "task_type": "segmentation"},
+        json={"project_id": project["id"], "name": "m", "task_type": "classification"},
     )
     assert response.status_code == 422
     assert response.json()["error_code"] == "VALIDATION_ERROR"
