@@ -262,7 +262,7 @@ SPEC 2.2 把「语义分割」列为 V1.0 扩展。检测与分割的后处理�
 | 掩膜后处理 + mIoU/IoU/Dice/像素准确率 | `backend/app/services/segmentation.py` | 完成 |
 | 合成分割模型 + 可命令行再生的回归资产（模型 + 真值掩膜） | `tools/synth_segmentation.py` | 完成 |
 | 分割 Model Adapter（`unet` / `segmentation`） | `backend/app/adapters/models/unet.py` | 完成 |
-| 分割版 C++ 工程模板（输出掩膜 + 统计，保留实时/推送） | `backend/app/codegen/templates/task/segmentation/` | 待做 |
+| 分割版 C++ 工程模板（输出掩膜 + 统计，保留实时/推送） | `backend/app/codegen/templates/task/segmentation/` | 完成（掩膜 PPM 输出 + JSON + 推送；实时摄像头循环未接） |
 | 流水线接线（分割任务的运行验证/精度报告写 mIoU） | `backend/app/pipeline/stages/` | 待做 |
 | 端到端回归（生成 → 编译 → 推理 → mIoU 报告） | `tests/`（GPU 标记） | 待做 |
 

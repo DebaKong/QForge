@@ -1,0 +1,36 @@
+// 生成文件：语义分割后处理（公共推理底座的"分割任务"部分）
+//
+// 与检测后处理（NMS 出框）完全不同的语义：这里做**逐像素 argmax** 得到掩膜，
+// 并统计类别直方图与忽略像素数——与平台 Python 侧 app/services/segmentation.py 保持一致，
+// 这样"运行验证""精度报告""C++ 产物"三处讲的是一件事。
+#pragma once
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace qforge {
+
+struct SegmentationResult {
+  std::vector<int> labels;         // 每个像素的类别 id（行优先），长度 = width * height
+  std::vector<long long> histogram;  // 每个类别的像素数，长度 = class_count
+  int width = 0;
+  int height = 0;
+  int class_count = 0;
+  long long ignored_pixels = 0;  // 等于 ignore_index 的像素数（不参与评估）
+  int ignore_index = -1;         // -1 表示不设置忽略标签
+};
+
+/// 把模型输出（NCHW float，C=类别数）解码成掩膜与统计
+SegmentationResult decode_segmentation(const std::vector<float>& output, int class_count,
+                                       int height, int width, int ignore_index);
+
+/// 把分割结果序列化成结构化 JSON（与平台报告的字段名保持一致）
+std::string segmentation_json(const SegmentationResult& result, const std::string& precision,
+                              const std::string& architecture, double latency_ms, int iterations,
+                              const std::string& input_shape, const std::string& output_shape);
+
+/// 把掩膜写成 PPM(P6) 图片：类别 id 映射为可区分的颜色（纯 C++，不依赖 OpenCV）
+void save_mask_ppm(const std::string& path, const SegmentationResult& result);
+
+}  // namespace qforge

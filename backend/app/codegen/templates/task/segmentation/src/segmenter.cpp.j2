@@ -1,0 +1,122 @@
+// 生成文件：语义分割后处理实现
+#include "qforge/segmenter.h"
+
+#include <algorithm>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+
+namespace qforge {
+namespace {
+
+/// 类别 id → 颜色：用固定调色板，保证不同类别在掩膜图里肉眼可分
+void color_for_class(int class_id, int& r, int& g, int& b) {
+  static const int palette[10][3] = {
+      {0, 0, 0},     {255, 0, 0},   {0, 255, 0},   {0, 0, 255},   {255, 255, 0},
+      {255, 0, 255}, {0, 255, 255}, {128, 128, 128}, {255, 128, 0}, {128, 0, 255},
+  };
+  const int index = ((class_id % 10) + 10) % 10;
+  r = palette[index][0];
+  g = palette[index][1];
+  b = palette[index][2];
+}
+
+}  // namespace
+
+SegmentationResult decode_segmentation(const std::vector<float>& output, int class_count,
+                                       int height, int width, int ignore_index) {
+  if (class_count <= 0 || height <= 0 || width <= 0) {
+    throw std::runtime_error("分割输出形状非法：class_count/height/width 必须为正");
+  }
+  const std::size_t expected =
+      static_cast<std::size_t>(class_count) * static_cast<std::size_t>(height) *
+      static_cast<std::size_t>(width);
+  if (output.size() != expected) {
+    std::ostringstream message;
+    message << "分割输出元素数不匹配：期望 " << expected << "，实际 " << output.size();
+    throw std::runtime_error(message.str());
+  }
+
+  SegmentationResult result;
+  result.class_count = class_count;
+  result.height = height;
+  result.width = width;
+  result.ignore_index = ignore_index;
+  result.labels.assign(static_cast<std::size_t>(height) * width, 0);
+  result.histogram.assign(static_cast<std::size_t>(class_count), 0);
+
+  const std::size_t plane = static_cast<std::size_t>(height) * width;
+  for (std::size_t pixel = 0; pixel < plane; ++pixel) {
+    int best_class = 0;
+    float best_score = output[pixel];  // 第 0 个通道
+    for (int channel = 1; channel < class_count; ++channel) {
+      const float score = output[static_cast<std::size_t>(channel) * plane + pixel];
+      if (score > best_score) {
+        best_score = score;
+        best_class = channel;
+      }
+    }
+    result.labels[pixel] = best_class;
+    if (ignore_index >= 0 && best_class == ignore_index) {
+      ++result.ignored_pixels;
+    } else {
+      ++result.histogram[static_cast<std::size_t>(best_class)];
+    }
+  }
+  return result;
+}
+
+std::string segmentation_json(const SegmentationResult& result, const std::string& precision,
+                              const std::string& architecture, double latency_ms, int iterations,
+                              const std::string& input_shape, const std::string& output_shape) {
+  std::ostringstream json;
+  json << std::fixed;
+  json.precision(6);
+  json << "{";
+  json << "\"status\":\"ok\",";
+  json << "\"task\":\"segmentation\",";
+  json << "\"precision\":\"" << precision << "\",";
+  json << "\"architecture\":\"" << architecture << "\",";
+  json << "\"input_shape\":" << input_shape << ",";
+  json << "\"output_shape\":" << output_shape << ",";
+  json << "\"iterations\":" << iterations << ",";
+  json << "\"latency_ms\":" << latency_ms << ",";
+  json << "\"mask_shape\":[" << result.height << "," << result.width << "],";
+  json << "\"class_count\":" << result.class_count << ",";
+  json << "\"ignored_pixels\":" << result.ignored_pixels << ",";
+  // 类别直方图：与平台 Python 侧的 class_histogram 同名，便于对账
+  json << "\"class_histogram\":{";
+  for (std::size_t index = 0; index < result.histogram.size(); ++index) {
+    if (index > 0) {
+      json << ",";
+    }
+    json << "\"" << index << "\":" << result.histogram[index];
+  }
+  json << "}";
+  json << "}";
+  return json.str();
+}
+
+void save_mask_ppm(const std::string& path, const SegmentationResult& result) {
+  std::ofstream stream(path, std::ios::binary);
+  if (!stream) {
+    throw std::runtime_error("无法写入掩膜文件: " + path);
+  }
+  stream << "P6\n" << result.width << " " << result.height << "\n255\n";
+
+  std::vector<unsigned char> buffer;
+  buffer.reserve(static_cast<std::size_t>(result.width) * result.height * 3);
+  for (int label : result.labels) {
+    int r = 0;
+    int g = 0;
+    int b = 0;
+    color_for_class(label, r, g, b);
+    buffer.push_back(static_cast<unsigned char>(r));
+    buffer.push_back(static_cast<unsigned char>(g));
+    buffer.push_back(static_cast<unsigned char>(b));
+  }
+  stream.write(reinterpret_cast<const char*>(buffer.data()),
+               static_cast<std::streamsize>(buffer.size()));
+}
+
+}  // namespace qforge

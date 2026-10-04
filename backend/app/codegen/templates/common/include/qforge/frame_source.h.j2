@@ -12,7 +12,9 @@
 #include <memory>
 #include <string>
 
+{% if model.task != 'segmentation' %}
 #include "qforge/detector.h"
+{% endif %}
 #include "qforge/image_io.h"
 
 namespace qforge {
@@ -43,7 +45,12 @@ bool uses_stream(const FrameSourceOptions& options);
 std::unique_ptr<FrameSource> create_frame_source(const FrameSourceOptions& options,
                                                  std::string& error);
 
+{% if model.task != 'segmentation' %}
 /// 窗口预览：画出检测框并显示；返回 false 表示用户按了 ESC（调用方应停止循环）
 bool display_frame(const Image& frame, const DetectionResult& result, int delay_ms);
+{% else %}
+// 分割任务的预览与实时循环尚未实现（掩膜可视化待做）：这里不提供该接口，
+// 避免公共代码被迫依赖检测专用的 DetectionResult（否则分割工程无法编译）。
+{% endif %}
 
 }  // namespace qforge

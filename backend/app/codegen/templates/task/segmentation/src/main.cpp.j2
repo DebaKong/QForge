@@ -1,0 +1,180 @@
+// 生成文件：语义分割程序入口（SPEC 2.2 / 11.3：加载 Engine → 真实推理 → 结构化结果）
+//
+// 用法：
+//   qforge_detector --engine <model.engine> [--image <in.ppm>] [--tensor <in.f32>]
+//                   [--output <result.json>] [--mask <mask.ppm>] [--iterations N]
+//                   [--push <http://host:port/path>] [--verbose]
+//
+// 与检测版程序的差别：这里做**逐像素 argmax** 出掩膜（不是 NMS 出框），
+// 输出 JSON 的字段是 mask_shape / class_histogram / ignored_pixels，与平台 Python 侧一致。
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "qforge/engine.h"
+#include "qforge/generated_config.h"
+#include "qforge/image_io.h"
+#include "qforge/preprocess.h"
+#include "qforge/push_client.h"
+#include "qforge/segmenter.h"
+
+namespace {
+
+struct Args {
+  std::string engine;
+  std::string image;
+  std::string tensor;
+  std::string output;
+  std::string mask;
+  std::string push;
+  int iterations = 1;
+  int verbosity = 1;
+};
+
+void print_usage() {
+  std::cerr << "用法: qforge_detector --engine <model.engine> [--image <in.ppm>] [--tensor <in.f32>] "
+               "[--output <result.json>] [--mask <mask.ppm>] [--iterations N] "
+               "[--push <http://host:port/path>] [--verbose]\n";
+}
+
+Args parse_args(int argc, char** argv) {
+  Args args;
+  for (int index = 1; index < argc; ++index) {
+    const std::string flag = argv[index];
+    const auto next = [&](const char* name) -> std::string {
+      if (index + 1 >= argc) {
+        throw std::runtime_error(std::string("参数缺少取值: ") + name);
+      }
+      return argv[++index];
+    };
+    if (flag == "--engine") {
+      args.engine = next("--engine");
+    } else if (flag == "--image") {
+      args.image = next("--image");
+    } else if (flag == "--tensor") {
+      args.tensor = next("--tensor");
+    } else if (flag == "--output") {
+      args.output = next("--output");
+    } else if (flag == "--mask") {
+      args.mask = next("--mask");
+    } else if (flag == "--push") {
+      args.push = next("--push");
+    } else if (flag == "--iterations") {
+      args.iterations = std::max(1, std::atoi(next("--iterations").c_str()));
+    } else if (flag == "--verbose") {
+      args.verbosity = 2;
+    } else if (flag == "--help" || flag == "-h") {
+      print_usage();
+      std::exit(0);
+    } else {
+      throw std::runtime_error("未知参数: " + flag);
+    }
+  }
+  return args;
+}
+
+std::string shape_to_json(const nvinfer1::Dims& dims) {
+  std::ostringstream stream;
+  stream << "[";
+  for (int index = 0; index < dims.nbDims; ++index) {
+    if (index > 0) {
+      stream << ",";
+    }
+    stream << dims.d[index];
+  }
+  stream << "]";
+  return stream.str();
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  try {
+    const Args args = parse_args(argc, argv);
+    if (args.engine.empty()) {
+      print_usage();
+      return 2;
+    }
+
+    qforge::PushTarget push_target;
+    if (!args.push.empty()) {
+      std::string error;
+      if (!qforge::parse_push_url(args.push, push_target, error)) {
+        throw std::runtime_error(error);
+      }
+      std::cerr << "[qforge] 结果将推送到 " << qforge::describe_target(push_target) << std::endl;
+    }
+
+    qforge::TrtEngine engine(args.engine, args.verbosity);
+
+    std::vector<float> input_data;
+    if (!args.tensor.empty()) {
+      input_data = qforge::load_raw_tensor(args.tensor, engine.input(0).element_count);
+    } else if (!args.image.empty()) {
+      const qforge::Image image = qforge::load_ppm(args.image);
+      input_data = qforge::preprocess_image(image).tensor;
+    } else {
+      throw std::runtime_error("必须提供 --image 或 --tensor 作为样例输入");
+    }
+
+    std::vector<std::vector<float>> outputs = engine.infer({input_data});  // 预热
+
+    double total_ms = 0.0;
+    for (int iteration = 0; iteration < args.iterations; ++iteration) {
+      const auto started = std::chrono::steady_clock::now();
+      outputs = engine.infer({input_data});
+      const auto finished = std::chrono::steady_clock::now();
+      total_ms += std::chrono::duration<double, std::milli>(finished - started).count();
+    }
+
+    // 分割输出是 (N, C, H, W) logits：C 取模型定义里的类别数，H/W 取实际张量形状
+    const nvinfer1::Dims dims = engine.output(0).dims;
+    if (dims.nbDims != 4) {
+      throw std::runtime_error("分割模型输出必须是 4D (N, C, H, W)");
+    }
+    const int class_count = static_cast<int>(dims.d[1]);
+    const int height = static_cast<int>(dims.d[2]);
+    const int width = static_cast<int>(dims.d[3]);
+    const qforge::SegmentationResult mask = qforge::decode_segmentation(
+        outputs.at(0), class_count, height, width, {{ model.ignore_index if model.ignore_index is not none else -1 }});
+
+    if (!args.mask.empty()) {
+      qforge::save_mask_ppm(args.mask, mask);
+      std::cerr << "[qforge] 掩膜已写入 " << args.mask << std::endl;
+    }
+
+    const std::string payload =
+        qforge::segmentation_json(mask, qforge::config::kPrecision, qforge::config::kArchitecture,
+                                  args.iterations > 0 ? total_ms / args.iterations : 0.0,
+                                  args.iterations, shape_to_json(engine.input(0).dims),
+                                  shape_to_json(dims));
+
+    std::cout << payload << std::endl;
+    if (!args.output.empty()) {
+      std::ofstream stream(args.output, std::ios::binary);
+      if (!stream) {
+        throw std::runtime_error("无法写入结果文件: " + args.output);
+      }
+      stream << payload;
+    }
+    if (!push_target.scheme.empty()) {
+      std::string push_error;
+      if (qforge::push_json(push_target, payload, push_error)) {
+        std::cerr << "[qforge] 推送：1 成功 / 0 失败" << std::endl;
+      } else {
+        std::cerr << "[qforge][警告] 推送失败：" << push_error << std::endl;
+      }
+    }
+    return 0;
+  } catch (const std::exception& error) {
+    std::cerr << "[qforge][ERROR] " << error.what() << std::endl;
+    return 1;
+  }
+}

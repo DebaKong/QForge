@@ -99,8 +99,13 @@ add_executable(qforge_detector
   src/engine.cpp
   src/image_io.cpp
   src/preprocess.cpp
+{% if model.task == 'segmentation' %}
+  # 分割任务：逐像素 argmax 出掩膜（无 NMS、无检测解码器）
+  src/segmenter.cpp
+{% else %}
   src/detector.cpp
   src/yolov8_decoder.cpp
+{% endif %}
   src/frame_source.cpp
   src/push_client.cpp
 )

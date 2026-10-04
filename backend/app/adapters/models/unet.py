@@ -144,15 +144,39 @@ class UNetAdapter(ModelAdapter):
     # ---------------- 代码生成参数 ----------------
 
     def template_context(self, definition: ModelDefinition) -> dict[str, Any]:
+        """给代码生成模板的参数。
+
+        键集与检测适配器**保持一致**：公共模板（generated_config.h / model.yaml / README /
+        start 脚本）是共用的，缺键会直接渲染失败（实测踩过：model.input_name 未定义）。
+        其中与检测相关的键（box_format / nms_* / has_objectness）在分割里给出"无意义但明确"的值，
+        避免模板里出现 Undefined。
+        """
         return {
             "architecture": self.architecture,
             "task": self.task,
-            "decoder": definition.postprocessing.decoder,
-            "class_count": definition.output.class_count,
-            "ignore_index": definition.postprocessing.ignore_index,
+            "input_name": definition.input.name,
             "input_shape": list(definition.input.shape),
-            "output_shape": list(definition.output.shape),
+            "input_layout": definition.input.layout,
+            "input_height": definition.input.height,
+            "input_width": definition.input.width,
+            "input_channels": definition.input.channels,
+            "class_count": definition.output.class_count,
+            # 分割不出框：这些键仍然要给（公共模板会读），值明确表示"不适用"
+            "has_objectness": False,
+            "box_format": "none",
             "output_name": definition.output.name,
+            "output_shape": list(definition.output.shape),
+            "decoder": definition.postprocessing.decoder,
+            "ignore_index": definition.postprocessing.ignore_index,
+            "nms_type": "none",
+            "confidence_threshold": 0.0,
+            "iou_threshold": 0.0,
+            "resize": definition.preprocessing.resize,
+            "color": definition.preprocessing.color,
+            "scale": definition.preprocessing.scale,
+            "mean": definition.preprocessing.mean,
+            "std": definition.preprocessing.std,
+            "pad_value": definition.preprocessing.pad_value,
         }
 
     # ---------------- 解码（供运行验证与精度报告使用） ----------------

@@ -45,11 +45,6 @@ RENDER_PLAN: tuple[tuple[str, str], ...] = (
     ("common/src/frame_source.cpp.j2", "src/frame_source.cpp"),
     ("common/include/qforge/push_client.h.j2", "include/qforge/push_client.h"),
     ("common/src/push_client.cpp.j2", "src/push_client.cpp"),
-    ("task/detection/src/main.cpp.j2", "src/main.cpp"),
-    ("task/detection/include/qforge/detector.h.j2", "include/qforge/detector.h"),
-    ("task/detection/src/detector.cpp.j2", "src/detector.cpp"),
-    ("model/yolov8/include/qforge/yolov8_decoder.h.j2", "include/qforge/yolov8_decoder.h"),
-    ("model/yolov8/src/yolov8_decoder.cpp.j2", "src/yolov8_decoder.cpp"),
     ("common/CMakeLists.txt.j2", "CMakeLists.txt"),
     ("config/model.yaml.j2", "config/model.yaml"),
     ("config/README.md.j2", "README.md"),
@@ -61,6 +56,36 @@ RENDER_PLAN: tuple[tuple[str, str], ...] = (
     ("common/start_camera.sh.j2", "start_camera.sh"),
     ("config/test_README.md.j2", "test/README.md"),
 )
+
+
+# 任务相关模板：按任务类型二选一（公共模板共用）。
+# 为什么要分开：检测与分割的后处理语义完全不同（NMS 出框 vs 逐像素 argmax 出掩膜），
+# 把两套源码都生成出来只会让产物里多一堆用不到的代码，也容易让人误读主流程。
+_TASK_RENDER_PLAN: dict[str, tuple[tuple[str, str], ...]] = {
+    "detection": (
+        ("task/detection/src/main.cpp.j2", "src/main.cpp"),
+        ("task/detection/include/qforge/detector.h.j2", "include/qforge/detector.h"),
+        ("task/detection/src/detector.cpp.j2", "src/detector.cpp"),
+        ("model/yolov8/include/qforge/yolov8_decoder.h.j2", "include/qforge/yolov8_decoder.h"),
+        ("model/yolov8/src/yolov8_decoder.cpp.j2", "src/yolov8_decoder.cpp"),
+    ),
+    "segmentation": (
+        ("task/segmentation/src/main.cpp.j2", "src/main.cpp"),
+        ("task/segmentation/include/qforge/segmenter.h.j2", "include/qforge/segmenter.h"),
+        ("task/segmentation/src/segmenter.cpp.j2", "src/segmenter.cpp"),
+    ),
+}
+
+
+def render_plan(task: str) -> tuple[tuple[str, str], ...]:
+    """按任务类型组装渲染计划：公共模板 + 该任务专属模板。"""
+    key = (task or "detection").lower()
+    if key not in _TASK_RENDER_PLAN:
+        raise CodegenFailedError(
+            f"没有该任务类型的代码模板：{task}",
+            detail={"task": task, "supported": sorted(_TASK_RENDER_PLAN)},
+        )
+    return (*RENDER_PLAN, *_TASK_RENDER_PLAN[key])
 
 
 @dataclass
@@ -139,7 +164,7 @@ def generate_project(
 
     project = GeneratedProject(root=dest)
     try:
-        for template_name, output_name in RENDER_PLAN:
+        for template_name, output_name in render_plan(definition.task):
             template = environment.get_template(template_name)
             rendered = template.render(**context)
             # 先规范化成 LF：模板文件本身可能被 git 检出成 CRLF（Windows），
