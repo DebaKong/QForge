@@ -35,6 +35,7 @@ from app.errors import (
 from app.pipeline.context import PipelineContext
 from app.pipeline.stages.prepare import record_artifact, write_json
 from app.services import opencv_dev, toolchain
+from app.services import layer_error_analysis
 from app.services.layout import place_input_file
 
 logger = logging.getLogger("qforge.pipeline")
@@ -515,6 +516,58 @@ def _verify_generated_program(context: PipelineContext) -> dict[str, Any]:
     }
 
 
+def _layer_error_analysis(context: PipelineContext) -> dict[str, Any]:
+    """分层误差分析（SPEC 9.2）：定位量化后的敏感层。
+
+    纯 CPU 工作，任何失败都只报 BLOCKED/SKIPPED，**不阻断任务**——它是质量分析，
+    端到端精度另有真实 Engine 对比（report/accuracy.json）。
+    """
+    mode = str(context.build_options.get("layer_analysis") or "auto").lower()
+    if mode == "skip":
+        return {"status": "SKIPPED", "reason": "任务配置 build.layer_analysis=skip"}
+    if mode == "auto" and context.precision != "int8":
+        # SPEC 9.2 分析的是"量化误差"：默认只对 INT8 跑；其他精度需要时用 build.layer_analysis=on
+        return {
+            "status": "SKIPPED",
+            "reason": (
+                f"分层误差分析针对 INT8 量化（SPEC 9.2），本任务精度为 {context.precision.upper()}；"
+                "如需对本精度执行，设置 build.layer_analysis=on"
+            ),
+        }
+    if context.onnx_path is None or context.definition is None:
+        return {"status": "SKIPPED", "reason": "缺少 ONNX 模型或 Model Definition"}
+
+    from app.services import preprocess as preprocess_service
+
+    input_shape = tuple(context.definition.input.shape)
+    samples: list[np.ndarray] = []
+    for image in list(context.calibration_images or [])[:4]:
+        try:
+            samples.append(
+                np.asarray(
+                    preprocess_service.preprocess_file(Path(image), context.definition).tensor,
+                    dtype=np.float32,
+                )
+            )
+        except Exception:  # noqa: BLE001 - 单张坏图跳过，不放弃整次分析
+            logger.warning("分层分析：校准图像预处理失败，已跳过 %s", image)
+    if not samples:
+        sample_path = context.intermediate_dir / "test_input.f32"
+        if sample_path.exists():
+            samples.append(np.fromfile(sample_path, dtype=np.float32).reshape(input_shape))
+    if not samples:
+        return {"status": "SKIPPED", "reason": "没有可用于分层分析的输入（无校准集且无样例输入）"}
+
+    try:
+        result = layer_error_analysis.analyze(
+            context.onnx_path, samples, input_name=context.definition.input.name
+        )
+    except Exception as exc:  # noqa: BLE001 - 分析器自身异常也不能影响任务结论
+        logger.warning("分层误差分析异常：%s", exc, exc_info=True)
+        return {"status": "BLOCKED", "reason": f"分层分析异常（{type(exc).__name__}）：{exc}"}
+    return result.to_dict()
+
+
 def run_testing(context: PipelineContext) -> None:
     """运行验证：Python 侧真实推理 + 精度指标；C++ 侧程序结构与输出校验。"""
     assert context.engine_path is not None
@@ -531,9 +584,24 @@ def run_testing(context: PipelineContext) -> None:
             "note": "SPEC 11.3 要求的「生成的 C++ 程序真实运行」在补齐工具链后重跑本任务即可验证",
         }
 
+    layer_analysis = _layer_error_analysis(context)
+    if layer_analysis.get("status") == "SUCCESS":
+        logger.info(
+            "分层误差分析完成：%s 层，最敏感的前 3 层 %s",
+            layer_analysis.get("analyzed_layers"),
+            [item["operator"] for item in (layer_analysis.get("ranking") or [])[:3]],
+        )
+    else:
+        logger.warning(
+            "分层误差分析未完成（%s）：%s",
+            layer_analysis.get("status"),
+            layer_analysis.get("reason"),
+        )
+
     context.verification = {
         "python_engine_verification": python_verification,
         "cpp_program_verification": cpp_verification,
+        "layer_error_analysis": layer_analysis,
         "engine_metadata": context.engine_metadata,
     }
 
@@ -541,6 +609,12 @@ def run_testing(context: PipelineContext) -> None:
         context.report_file("runtime_verification.json"),
         {"task_id": context.task_id, "precision": context.precision, **context.verification},
     )
+    # 分层误差分析单独成文件（SPEC 9.2）：界面与后续混合精度策略都直接读它
+    write_json(
+        context.report_file("layer_error_analysis.json"),
+        {"task_id": context.task_id, "precision": context.precision, **layer_analysis},
+    )
+    context.reports.append("report/layer_error_analysis.json")
     write_json(
         context.report_file("accuracy.json"),
         {

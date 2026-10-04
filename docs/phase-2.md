@@ -6,7 +6,7 @@ SPEC 17 对阶段 2 的要求：**分割、误差分析、算子检测、数据�
 
 | 批次 | 内容 | 状态 |
 | --- | --- | --- |
-| **2A** | ① 算子兼容性报告 ② 分层误差分析 + 精度报告页 ③ 数据集管理 | ① 完成；②③ 进行中 |
+| **2A** | ① 算子兼容性报告 ② 分层误差分析 + 精度报告页 ③ 数据集管理 | ①② 完成；③ 进行中 |
 | **2C** | INT8 改用 Q/DQ 显式量化（阶段 1 遗留项：当前 EntropyCalibrator2 已 deprecated） | 未开始 |
 | **2B** | 语义分割全链路（Adapter + mask 后处理 + C++ 模板 + mIoU 指标 + 合成分割模型回归；联网允许时再拉一个公开小模型） | 未开始 |
 
@@ -66,3 +66,72 @@ opset 11」、问题算子表含「限制条件 / 建议」列并列出 `Resize`
 - 能力表按 TensorRT 10.x 编写；升级 TensorRT 大版本时需复核（已在模块 docstring 注明）。
 - 只覆盖**算子级**结论；同一算子在不同 shape/属性下仍可能构建失败，这类问题由真实构建日志
   （`report/engine_build.json` + `logs/`）负责暴露。
+
+---
+
+## 2. 分层误差分析 + 精度报告页（SPEC 9.2）— 完成
+
+### 2.1 交付内容
+
+| 模块 | 位置 |
+| --- | --- |
+| 分层误差分析（FP32 基线 vs INT8，逐层指标 + 敏感层排序） | `backend/app/services/layer_error_analysis.py` |
+| 接入 TESTING 阶段（纯 CPU，失败只标 BLOCKED 不阻断任务） | `backend/app/pipeline/stages/build.py::_layer_error_analysis` |
+| 产物报告 | `report/layer_error_analysis.json`（另在 `runtime_verification.json` 内引用） |
+| 查询接口 | `GET /api/tasks/{id}/precision`（端到端精度 + 分层分析；未到 TESTING 阶段返回 501） |
+| 精度报告页（替换阶段 1 的占位页） | `frontend/src/views/PrecisionReportView.vue` |
+
+### 2.2 做法与边界（写进报告，不含糊）
+
+1. **instrument**：把选定节点的输出临时追加为图输出，其余结构/权重完全不变；
+2. 用 onnxruntime 跑 **FP32 基线**；
+3. 用 onnxruntime 对**同一张图**做 **INT8 静态量化**（QDQ / QInt8 / MinMax，校准数据就是本任务
+   实际使用的校准集），再跑一次；
+4. 逐张量算 MAE / MSE / RMSE / 最大绝对误差 / Cosine，并按**相对 RMSE**（RMSE ÷ 基线绝对峰值）
+   排序——跨层比较必须用相对量，否则量纲大的层永远排第一；
+5. 多个校准样本**先各自算指标再平均**，避免把不同样本拼成一个大张量掩盖单样本退化；
+6. 选取规则：静态 float 张量、元素数在 [64, 4e6] 之间，超过上限时**按图顺序均匀抽样**
+   （不是只取前 N 个，避免只看前半张图）；默认最多 120 层、最多 4 个输入样本。
+
+**边界（重要）**：分层分析在 ONNX/onnxruntime 层面进行，用于**定位敏感层**；它**不是** TensorRT
+Engine 的逐层数据（TRT 运行期不暴露中间张量，要拿就得在 build 阶段 markOutput 重建引擎，代价与
+风险都不合适）。**端到端精度**仍以真实 Engine 与 FP32 基准的对比为准（`report/accuracy.json`），
+两者不一致时以端到端为准。
+
+默认策略：`build.layer_analysis=auto` 时**只对 INT8 任务**执行（SPEC 9.2 分析的是量化误差）；
+其他精度需要时设 `build.layer_analysis=on`，关闭用 `skip`。
+
+### 2.3 验证证据
+
+纯 CPU 用例 10 项（`tests/test_layer_error_analysis.py`）：指标精确值、形状不一致报错、
+**相对 RMSE 才能跨层比较**、候选层筛选上限、instrument 不改变原图（输出与算子数不变）、
+无输入样本 → SKIPPED、**量化失败降级为 BLOCKED 且说明不影响任务结论**、真实 ONNX 全流程
+（分层指标齐全 + 排序单调递减 + ranking 上限）、`/precision` 路由返回两份报告、缺报告 501。
+全量套件 **207 项通过**。
+
+真实端到端（真实 yolov8n + **INT8** + 4 张校准图 + 真实 TensorRT 熵校准 Engine，任务 75s SUCCESS）：
+
+```text
+端到端（真实 INT8 Engine vs FP32 基准）：MAE 0.671977｜RMSE 6.173026｜余弦 0.994838｜最大绝对误差 316.53
+分层分析：status=SUCCESS｜分析层数 120/120｜输入样本 4
+敏感层排序（相对 RMSE 降序）：
+  #1 Sigmoid  relRMSE=0.12643  RMSE=0.12643  余弦=0.98261  元素=32000
+  #2 Sigmoid  relRMSE=0.10248  RMSE=0.10248  余弦=0.98786  元素=128000
+  #3 Sigmoid  relRMSE=0.08075  RMSE=0.08075  余弦=0.99275  元素=512000
+  #4 Sigmoid  relRMSE=0.07429  RMSE=0.07429  余弦=0.99461  元素=409600
+  #5 Split    relRMSE=0.05177  RMSE=0.10628  余弦=0.95407  元素=51200
+```
+
+结论合理地指向 **Sigmoid 激活层**（YOLOv8 的激活层是 INT8 混合精度的经典敏感点）——这与后续
+2C（Q/DQ 显式量化）和混合精度策略的预期一致。
+
+浏览器验证（Playwright + Edge，`/report` 页）：端到端区块显示 MAE/RMSE/余弦真实数值（无占位符）、
+分层区块显示「状态：SUCCESS 分析层数：120/120 输入样本：4」、敏感层排序表含相对 RMSE 进度条与
+Sigmoid 行、可展开全部层明细，**无控制台错误**。
+
+### 2.4 已知限制
+
+- 只分析**静态 float** 中间张量（动态形状张量无法逐层比对）；超限时均匀抽样而非全量。
+- 分层分析基于 ORT 的 INT8 量化近似（QDQ/MinMax），与 TensorRT 的熵校准实现不完全等价：
+  用于**排序找敏感层**是可靠的，但**不要**把它当作 TRT 的逐层数值。
+- 尚未实现 SPEC 9.2 末尾的「混合精度策略 / 自动保留敏感层 FP16」——列为 2C 之后的候选。

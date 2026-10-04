@@ -147,3 +147,37 @@ def get_task_compatibility(task_id: str, session: SessionDep) -> dict:
         "该任务尚无算子兼容性报告（需先完成模型校验阶段）",
         detail={"task_id": task_id},
     )
+
+
+@router.get(
+    "/{task_id}/precision",
+    summary="精度报告（SPEC 9.2）：端到端精度 + 分层误差分析",
+    description=(
+        "accuracy：FP32 基准 vs 本任务精度的端到端指标（MAE/MSE/RMSE/最大绝对误差/余弦相似度）；"
+        "layer_error_analysis：逐层对比与敏感层排序（定位量化敏感层）。"
+    ),
+)
+def get_task_precision(task_id: str, session: SessionDep) -> dict:
+    task_service.get_task(session, task_id)  # 先确认任务存在
+
+    storage_root = get_settings().resolved_storage_root
+    payload: dict = {"task_id": task_id, "accuracy": None, "layer_error_analysis": None}
+    wanted = {
+        "report/accuracy.json": "accuracy",
+        "report/layer_error_analysis.json": "layer_error_analysis",
+    }
+    for artifact in task_service.list_artifacts(session, task_id):
+        for suffix, key in wanted.items():
+            if not artifact.relative_path.endswith(suffix):
+                continue
+            segments = [segment for segment in artifact.relative_path.split("/") if segment]
+            path = safe_join(storage_root, *segments)
+            if path.exists():
+                payload[key] = json.loads(path.read_text(encoding="utf-8"))
+
+    if payload["accuracy"] is None and payload["layer_error_analysis"] is None:
+        raise NotImplementedInPhaseError(
+            "该任务尚无精度报告（需先完成到 TESTING 阶段）",
+            detail={"task_id": task_id, "planned_phase": "phase-2"},
+        )
+    return payload
