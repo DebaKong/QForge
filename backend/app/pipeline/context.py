@@ -36,6 +36,8 @@ class PipelineContext:
 
     onnx_path: Path | None = None
     calibration_images: list[Path] = field(default_factory=list)
+    # INT8 显式量化（Q/DQ）产物：由 QUANTIZING 阶段生成，BUILDING_ENGINE 阶段优先解析它
+    quantized_onnx_path: Path | None = None
     sample_image: Path | None = None
 
     engine_path: Path | None = None

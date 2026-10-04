@@ -28,6 +28,8 @@ class TaskCreate(ORMModel):
     postprocess: dict[str, Any] | None = None
     calibration: dict[str, Any] | None = None
     build: dict[str, Any] | None = None
+    # INT8 量化方式（SPEC 9.1）：{"mode": "qdq"|"calibrator", "method": "minmax|entropy|percentile"}
+    quantization: dict[str, Any] | None = None
     validation: dict[str, Any] | None = None
 
     @field_validator("task_type")

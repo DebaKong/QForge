@@ -112,6 +112,8 @@ def build_task_config_snapshot(
         "postprocess": postprocess or {},
         "calibration": calibration or {},
         "build": data.build or {},
+        # INT8 量化方式（SPEC 9.1）：mode=qdq（默认，显式量化）/ calibrator（旧熵校准确认对比用）
+        "quantization": data.quantization or {},
         "validation": data.validation or {},
     }
 

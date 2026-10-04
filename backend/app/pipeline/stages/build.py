@@ -75,6 +75,8 @@ def run_engine_build(context: PipelineContext) -> None:
         calibration_cache=context.intermediate_dir
         / context.settings.calibration_cache_filename,
         log_path=build_log,
+        # INT8 显式量化（Q/DQ）产物：有就优先解析它（SPEC 9.1 的升级路径）
+        quantized_onnx_path=context.quantized_onnx_path,
     )
 
     context.engine_path = engine_path

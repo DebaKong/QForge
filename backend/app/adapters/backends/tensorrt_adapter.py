@@ -37,6 +37,7 @@ from app.errors import (
     OperatorUnsupportedError,
     RuntimeTestFailedError,
 )
+from app.services import qdq_quantization
 from app.services.preprocess import preprocess_batches
 
 logger = logging.getLogger(__name__)
@@ -324,10 +325,15 @@ class TensorRTAdapter(BackendAdapter):
         workspace_bytes: int,
         calibration_cache: Path | None,
         log_path: Path,
+        quantized_onnx_path: Path | None = None,
     ) -> dict[str, Any]:
         trt = import_tensorrt()
         cudart = cuda_memory.load_cudart()
         builder_log = logging.getLogger("qforge.engine")
+
+        # INT8 显式量化（Q/DQ）：量化参数已固化在图里，解析 Q/DQ 模型并跳过校准回调
+        model_source = qdq_quantization.select_model_source(precision, onnx_path, quantized_onnx_path)
+        using_qdq = model_source != onnx_path
 
         delegate = _FileLogger(trt, log_path)
         logger_cls = _make_logger_class(trt)
@@ -340,11 +346,20 @@ class TensorRTAdapter(BackendAdapter):
             )
             parser = trt.OnnxParser(network, trt_logger)
 
-            builder_log.info("开始解析 ONNX：%s", onnx_path.name)
-            if not parser.parse(onnx_path.read_bytes()):
+            builder_log.info(
+                "开始解析 ONNX：%s%s",
+                model_source.name,
+                "（INT8 显式量化 Q/DQ 产物）" if using_qdq else "",
+            )
+            if not parser.parse(model_source.read_bytes()):
                 errors = [str(parser.get_error(i)) for i in range(parser.num_errors)]
                 raise EngineBuildFailedError(
-                    "TensorRT 解析 ONNX 失败", detail={"parser_errors": errors[:20]}
+                    "TensorRT 解析 ONNX 失败",
+                    detail={
+                        "parser_errors": errors[:20],
+                        "model": model_source.name,
+                        "quantization": "qdq" if using_qdq else "none",
+                    },
                 )
 
             # 注意：TRT 10.x 的工厂方法名是 create_builder_config（不是 create_config），
@@ -373,63 +388,81 @@ class TensorRTAdapter(BackendAdapter):
                     raise BackendUnavailableError(
                         "当前 GPU 不支持快速 INT8", detail={"gpu": "platform_has_fast_int8=False"}
                     )
-                if not calibration_images:
+                if not calibration_images and not using_qdq:
                     raise EngineBuildFailedError(
                         "INT8 静态量化必须提供校准图像（SPEC 9.1 步骤 3）"
                     )
 
                 config.set_flag(trt.BuilderFlag.INT8)
-                batches = list(
-                    preprocess_batches(
-                        calibration_images,
-                        definition,
-                        batch_size=min(8, max(1, len(calibration_images))),
-                    )
-                )
-                if not batches:
-                    raise EngineBuildFailedError("校准批次为空，无法执行 INT8 校准")
 
-                cache_path = calibration_cache or (engine_path.parent / "calibration.cache")
-                calibrator = TensorRTEntropyCalibrator.create(
-                    trt,
-                    cudart,
-                    batches=batches,
-                    cache_path=cache_path,
-                    input_name=definition.input.name,
-                    batch_size=int(batches[0].shape[0]),
-                    log=builder_log,
-                )
-                # TRT 10.1 起 IInt8Calibrator 被标记为 deprecated，官方推荐「显式量化」（Q/DQ）。
-                # 该路径在 10.16 仍然可用，且是「校准集 → 校准 → INT8 Engine」最直接的实现，
-                # 因此这里保留并**显式忽略弃用告警**，同时在报告中记录该事实与升级方向
-                # （见 docs/phase-1.md「已知问题」）。不使用 hasattr 探测属性，
-                # 因为读取该属性本身就会触发弃用告警。
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", DeprecationWarning)
-                    try:
-                        config.int8_calibrator = calibrator
-                    except Exception as exc:
-                        raise BackendUnavailableError(
-                            "当前 TensorRT 版本无法设置 INT8 校准器（IInt8Calibrator 可能已移除）",
-                            detail={
-                                "tensorrt_version": trt.__version__,
-                                "error": f"{type(exc).__name__}: {exc}",
-                                "hint": "可改用显式量化（Q/DQ ONNX）路径",
-                            },
-                        ) from exc
-                calibration_info = {
-                    "method": "IInt8EntropyCalibrator2",
-                    "calibrator_api_status": "deprecated since TensorRT 10.1（推荐显式量化）",
-                    "images": len(calibration_images),
-                    "batches": len(batches),
-                    "batch_size": int(batches[0].shape[0]),
-                    "cache_file": cache_path.name,
-                }
-                builder_log.info(
-                    "精度模式 INT8：静态熵校准，%s 张图像 / %s 个批次",
-                    len(calibration_images),
-                    len(batches),
-                )
+                if using_qdq:
+                    # 显式量化（Q/DQ）：量化参数固化在图里，**不设置也不应设置**校准回调。
+                    # 这条路径避开了 TensorRT 10.1 起已弃用的 IInt8Calibrator（官方推荐方向）。
+                    batches = []
+                    calibration_info = {
+                        "method": "Q/DQ 显式量化（onnxruntime 静态量化）",
+                        "calibrator_api_status": "not_used（改用官方推荐的显式量化路径）",
+                        "model": model_source.name,
+                        "int8_calibrator": None,
+                        "note": "激活尺度与权重尺度已固化在 Q/DQ 图中，构建期不读取校准数据",
+                    }
+                    builder_log.info(
+                        "精度模式 INT8：使用 Q/DQ 显式量化模型 %s（无校准回调）", model_source.name
+                    )
+                else:
+                    if not calibration_images:
+                        raise EngineBuildFailedError(
+                            "INT8 静态量化必须提供校准图像（SPEC 9.1 步骤 3）"
+                        )
+                    batches = list(
+                        preprocess_batches(
+                            calibration_images,
+                            definition,
+                            batch_size=min(8, max(1, len(calibration_images))),
+                        )
+                    )
+                    if not batches:
+                        raise EngineBuildFailedError("校准批次为空，无法执行 INT8 校准")
+
+                    cache_path = calibration_cache or (engine_path.parent / "calibration.cache")
+                    calibrator = TensorRTEntropyCalibrator.create(
+                        trt,
+                        cudart,
+                        batches=batches,
+                        cache_path=cache_path,
+                        input_name=definition.input.name,
+                        batch_size=int(batches[0].shape[0]),
+                        log=builder_log,
+                    )
+                    # TRT 10.1 起 IInt8Calibrator 被标记为 deprecated，官方推荐「显式量化」（Q/DQ）。
+                    # 该路径在 10.16 仍然可用，保留用于与 Q/DQ 路径对比（SPEC 9.1 的旧实现）。
+                    # 不使用 hasattr 探测属性，因为读取该属性本身就会触发弃用告警。
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", DeprecationWarning)
+                        try:
+                            config.int8_calibrator = calibrator
+                        except Exception as exc:
+                            raise BackendUnavailableError(
+                                "当前 TensorRT 版本无法设置 INT8 校准器（IInt8Calibrator 可能已移除）",
+                                detail={
+                                    "tensorrt_version": trt.__version__,
+                                    "error": f"{type(exc).__name__}: {exc}",
+                                    "hint": "可改用显式量化（Q/DQ ONNX）路径",
+                                },
+                            ) from exc
+                    calibration_info = {
+                        "method": "IInt8EntropyCalibrator2",
+                        "calibrator_api_status": "deprecated since TensorRT 10.1（推荐显式量化）",
+                        "images": len(calibration_images),
+                        "batches": len(batches),
+                        "batch_size": int(batches[0].shape[0]),
+                        "cache_file": cache_path.name,
+                    }
+                    builder_log.info(
+                        "精度模式 INT8：静态熵校准，%s 张图像 / %s 个批次",
+                        len(calibration_images),
+                        len(batches),
+                    )
             elif precision == "fp32":
                 builder_log.info("精度模式 FP32：基准精度，不启用额外标志")
             else:  # pragma: no cover - 上游已校验

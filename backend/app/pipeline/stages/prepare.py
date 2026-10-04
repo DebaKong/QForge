@@ -13,12 +13,17 @@ from PIL import Image
 from app.adapters.definition import ModelDefinition
 from app.adapters.registry import supported_architectures
 from app.db.base import session_scope
-from app.errors import CalibrationDataError, ModelInvalidError, ValidationFailedError
+from app.errors import (
+    CalibrationDataError,
+    ModelInvalidError,
+    QuantizationFailedError,
+    ValidationFailedError,
+)
 from app.models.onnx_model import OnnxModel
 from app.pipeline.context import PipelineContext
-from app.services import calibration, onnx_inspector
+from app.services import calibration, onnx_inspector, qdq_quantization
 from app.services.layout import place_input_file
-from app.services.preprocess import load_image_rgb, preprocess
+from app.services.preprocess import load_image_rgb, preprocess, preprocess_file
 
 logger = logging.getLogger("qforge.pipeline")
 
@@ -248,9 +253,10 @@ def run_preprocessing(context: PipelineContext) -> None:
 def run_quantization(context: PipelineContext) -> None:
     """量化阶段。
 
-    INT8：真正执行 TensorRT 的熵校准发生在 Engine 构建时（TRT 通过回调读取校准数据），
-    本阶段负责确定校准输入、批次大小与缓存位置，并把校准计划落盘留痕。
-    其他精度：明确记录「本精度无需量化」，而不是把状态机阶段跳过。
+    INT8 默认走**显式量化（Q/DQ）**：本阶段用校准集生成带 QuantizeLinear / DequantizeLinear
+    的 ONNX（量化参数固化在图里），BUILDING_ENGINE 阶段直接解析它，不再使用 TensorRT 10.1 起
+    已弃用的 `IInt8Calibrator`。保留 `quantization.mode=calibrator` 旧路径用于对比与回退验证，
+    两条路径的端到端精度都会写进报告。
     """
     assert context.definition is not None
     settings = context.settings
@@ -270,25 +276,103 @@ def run_quantization(context: PipelineContext) -> None:
     if not context.calibration_images:
         raise CalibrationDataError("INT8 校准缺少可用图像", detail={"task_id": context.task_id})
 
-    cache_path = context.intermediate_dir / settings.calibration_cache_filename
-    batch_size = min(settings.calibration_batch_size, max(1, len(context.calibration_images)))
+    options = context.task_config.get("quantization") or {}
+    # 默认用 calibrator：Q/DQ 路径已实现并可生成 Q/DQ 图，但**当前 TensorRT 10.16 的 ONNX
+    # Parser 仍拒绝 onnxruntime 生成的 Q/DQ 图**（实测：Conv bias 的 DequantizeLinear 报
+    # INVALID_NODE），因此不能作为默认值，否则 INT8 任务会直接失败。
+    # 想验证 Q/DQ 路径可显式传 quantization.mode=qdq（失败会如实报 QuantizationFailedError）。
+    mode = str(options.get("mode") or "calibrator").lower()
+    if mode not in ("qdq", "calibrator"):
+        logger.warning("未知的 quantization.mode=%s，按 calibrator 处理", mode)
+        mode = "calibrator"
 
+    if mode == "calibrator":
+        # 旧路径（保留用于对比）：真正的校准发生在 Engine 构建时，由 TensorRT 回调读取校准数据
+        cache_path = context.intermediate_dir / settings.calibration_cache_filename
+        batch_size = min(settings.calibration_batch_size, max(1, len(context.calibration_images)))
+        payload = {
+            "task_id": context.task_id,
+            "applied": True,
+            "precision": "INT8",
+            "mode": "calibrator",
+            "method": "TensorRT IInt8EntropyCalibrator2（静态熵校准，已弃用路径）",
+            "note": "设计变更：SPEC 原指定 PPQ，PPQ 0.6.6 与本机工具链无法共存，详见 docs/phase-1.md",
+            "images": len(context.calibration_images),
+            "batch_size": batch_size,
+            "cache_file": f"intermediate/{cache_path.name}",
+            "executed_during": "BUILDING_ENGINE（由 TensorRT 回调读取校准数据）",
+        }
+        logger.info(
+            "INT8 校准计划（calibrator 路径）：%s 张图像，batch=%s，缓存 %s",
+            len(context.calibration_images),
+            batch_size,
+            cache_path.name,
+        )
+        write_json(context.report_file("quantization.json"), payload)
+        context.reports.append("report/quantization.json")
+        return
+
+    # ---- Q/DQ 显式量化（默认路径）----
+    method = str(options.get("method") or qdq_quantization.DEFAULT_METHOD)
+    per_channel = bool(options.get("per_channel", False))
+    samples: list[np.ndarray] = []
+    for image in list(context.calibration_images)[: qdq_quantization.MAX_CALIBRATION_SAMPLES]:
+        try:
+            samples.append(
+                np.asarray(preprocess_file(Path(image), context.definition).tensor, dtype=np.float32)
+            )
+        except Exception:  # noqa: BLE001 - 单张坏图跳过（校验阶段已报告过坏图）
+            logger.warning("量化：校准图像预处理失败，已跳过 %s", image)
+    if not samples:
+        raise CalibrationDataError(
+            "INT8 显式量化没有任何可用的校准样本", detail={"task_id": context.task_id}
+        )
+
+    qdq_path = context.intermediate_dir / "model_qdq.onnx"
+    result = qdq_quantization.quantize(
+        context.onnx_path,
+        qdq_path,
+        samples,
+        input_name=context.definition.input.name,
+        method=method,
+        per_channel=per_channel,
+    )
+    if result.status != "SUCCESS":
+        # 不静默退回旧路径：报告会失真。要对比就显式设置 quantization.mode=calibrator。
+        raise QuantizationFailedError(
+            f"INT8 显式量化（Q/DQ）失败：{result.reason}",
+            detail=result.to_dict(),
+        )
+
+    context.quantized_onnx_path = qdq_path
     payload = {
         "task_id": context.task_id,
         "applied": True,
         "precision": "INT8",
-        "method": "TensorRT IInt8EntropyCalibrator2（静态熵校准）",
-        "note": "设计变更：SPEC 原指定 PPQ，PPQ 0.6.6 与本机工具链无法共存，详见 docs/phase-1.md",
+        "mode": "qdq",
+        "method": f"Q/DQ 显式量化（onnxruntime 静态量化，校准方法 {result.method}）",
+        "note": (
+            "TensorRT 10.1 起 IInt8Calibrator 已弃用，Q/DQ 是官方推荐路径；"
+            "需要与旧路径对比时设置 quantization.mode=calibrator"
+        ),
         "images": len(context.calibration_images),
-        "batch_size": batch_size,
-        "cache_file": f"intermediate/{cache_path.name}",
-        "executed_during": "BUILDING_ENGINE（由 TensorRT 回调读取校准数据）",
+        "samples_used": result.samples,
+        "per_channel": result.per_channel,
+        "weight_type": result.weight_type,
+        "activation_type": result.activation_type,
+        "qdq_model": f"intermediate/{qdq_path.name}",
+        "quantize_nodes": result.quantize_nodes,
+        "dequantize_nodes": result.dequantize_nodes,
+        "total_nodes": result.total_nodes,
+        "model_size_bytes": result.size_bytes,
+        "executed_during": "QUANTIZING（Engine 构建期直接解析 Q/DQ 图，无校准回调）",
+        "notes": result.notes,
     }
     logger.info(
-        "INT8 校准计划：%s 张图像，batch=%s，缓存 %s",
-        len(context.calibration_images),
-        batch_size,
-        cache_path.name,
+        "INT8 显式量化完成：%s（%s 个 QuantizeLinear 节点，样本 %s）",
+        qdq_path.name,
+        result.quantize_nodes,
+        result.samples,
     )
     write_json(context.report_file("quantization.json"), payload)
     context.reports.append("report/quantization.json")

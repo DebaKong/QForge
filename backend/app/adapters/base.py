@@ -123,8 +123,13 @@ class BackendAdapter(ABC):
         workspace_bytes: int,
         calibration_cache: Path | None,
         log_path: Path,
+        quantized_onnx_path: Path | None = None,
     ) -> dict[str, Any]:
-        """构建 Engine，返回构建元数据（engine_metadata，SPEC 4.1 / 10.1）。"""
+        """构建 Engine，返回构建元数据（engine_metadata，SPEC 4.1 / 10.1）。
+
+        `quantized_onnx_path` 是**显式量化（Q/DQ）产物**：INT8 下若提供，后端应优先解析它
+        （量化参数已固化在图里，不需要运行期校准回调）。
+        """
 
     @abstractmethod
     def run_inference(
